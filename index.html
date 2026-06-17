@@ -1,0 +1,136 @@
+<!doctype html>
+<html lang="ko">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="description" content="나 에이든은 마침내 독자적인 훈련 능력을 얻었다." />
+    <link rel="icon" href="src/Aiden_P.png" />
+    <title>든뮬레이터</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <main class="simulator" aria-label="에이든 전투 연습장">
+      <section class="stage" id="stage">
+        <div class="field" id="field">
+          <div class="world" id="world">
+          <div class="ground" id="ground" aria-hidden="true"></div>
+          <div class="range-layer" id="rangeLayer" aria-hidden="true">
+            <div class="range-circle" id="wRange"></div>
+            <div class="range-circle e2-range" id="e2Range"></div>
+            <div class="range-circle target-range" id="rRange"></div>
+            <div class="range-line" id="qRange"></div>
+            <div class="range-line" id="eRange"></div>
+            <div class="range-circle attack-range" id="aRange"></div>
+          </div>
+
+          <div class="cursor-ring" id="cursorRing" aria-hidden="true"></div>
+          <div class="move-point" id="movePoint" aria-hidden="true"></div>
+          <div class="aim-line" id="aimLine" aria-hidden="true"></div>
+          <div class="dummy-layer" id="dummyLayer" aria-label="연습 더미 목록"></div>
+
+          <div class="unit aiden" id="aiden" aria-label="에이든">
+            <div class="aura"></div>
+            <div class="shadow"></div>
+            <img class="aiden-sprite" src="src/Aiden_Mini_03.png" alt="" />
+            <div class="facing-mark">&lt;</div>
+          </div>
+          <div class="char-stacks" id="charStacks" aria-hidden="true"></div>
+          </div>
+        </div>
+
+        <aside class="side-panel" aria-label="전투 설정">
+          <div class="panel-group state-card">
+            <div class="state-top">
+              <span>상태</span>
+              <strong id="modeText">일반</strong>
+            </div>
+            <div class="charge-line">
+              <span id="resourceLabel">전하</span>
+              <b id="chargeText">0 / 5</b>
+            </div>
+            <div class="charge-slots" id="chargeSlots"></div>
+            <div class="timer-bar"><span id="modeTimer"></span></div>
+          </div>
+
+          <div class="panel-group dummy-panel">
+            <label>최근 타격 더미 체력</label>
+            <div class="health-bar"><span id="dummyHp"></span></div>
+            <div class="dummy-count" id="dummyCount">더미 1개</div>
+          </div>
+
+          <div class="panel-group controls">
+            <label class="toggle">
+              <input type="checkbox" id="autoFace" />
+              <span>마우스 방향 보기</span>
+            </label>
+            <label class="toggle">
+              <input type="checkbox" id="cameraLock" checked />
+              <span>카메라 잠금</span>
+            </label>
+            <label class="toggle">
+              <input type="checkbox" id="rangePreview" checked />
+              <span>스킬 사거리 표시</span>
+            </label>
+            <label class="toggle">
+              <input type="checkbox" id="cooldownResetMode" />
+              <span>쿨타임 초기화 모드</span>
+            </label>
+            <label class="toggle">
+              <input type="checkbox" id="dummyMoveMode" />
+              <span>더미 이동</span>
+            </label>
+            <label class="toggle">
+              <input type="checkbox" id="cameraShakeMode" checked />
+              <span>카메라 흔들림</span>
+            </label>
+            <label class="toggle">
+              <input type="checkbox" id="voiceMode" checked />
+              <span>음성 대사</span>
+            </label>
+            <label class="toggle">
+              <input type="checkbox" id="alexMode" />
+              <span id="alexLabel">미안해.. 알렉스</span>
+            </label>
+            <div class="setting-row">
+              <label for="camSens">카메라 감도</label>
+              <input type="number" id="camSens" value="20" min="1" max="200" step="5" />
+            </div>
+            <div class="keybind-row">
+              <span class="keybind-label">조작키 (클릭 후 키 입력)</span>
+              <div class="keybinds" id="keybinds"></div>
+            </div>
+            <div class="button-grid">
+              <button id="healBtn" type="button">전체 회복</button>
+              <button id="addDummyBtn" type="button">더미 추가</button>
+              <button id="champResetBtn" type="button">실험체 초기화</button>
+              <button id="fullChargeBtn" type="button">전하 충전</button>
+              <button id="clearCooldownBtn" type="button">쿨타임 초기화</button>
+            </div>
+          </div>
+        </aside>
+
+        <div class="cast-panel" id="castPanel" aria-live="polite">
+          <div class="cast-name" id="castName"></div>
+          <div class="cast-bar"><span id="castFill"></span></div>
+        </div>
+
+        <footer class="skill-dock" aria-label="스킬 바">
+          <button class="skill-slot" data-key="Q" type="button"></button>
+          <button class="skill-slot" data-key="W" type="button"></button>
+          <button class="skill-slot" data-key="E" type="button"></button>
+          <button class="skill-slot" data-key="R" type="button"></button>
+          <button class="skill-slot weapon" data-key="D" type="button"></button>
+          <button class="skill-slot utility" data-key="F" type="button"></button>
+          <div class="passive-slot" id="passiveSlot" aria-label="과전하 지속시간">
+            <img src="src/Aiden_P.png" alt="" />
+            <span class="passive-dur" id="passiveDur"></span>
+          </div>
+        </footer>
+
+        <p class="credit">본 웹사이트는 (주)님블뉴런의 "이터널리턴"을 바탕으로 제작된 2차 창작 사이트입니다.</p>
+      </section>
+    </main>
+
+    <script src="app.js"></script>
+  </body>
+</html>
