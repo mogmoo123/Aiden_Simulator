@@ -1,6 +1,9 @@
 const MAX_CHARGE = 5;
-const OVERCHARGE_TIME = 10;
+const DUMMY_HIT_RADIUS = 24;    // 더미 히트박스 반경(px) ≈ 더미 시각 크기(54×58)의 0.9배(가로 절반 27px × 0.9)
+const OVERCHARGE_TIME = 12;     // 과전하 지속시간(초)
+const CHARGE_DURATION = 5;      // 전하 지속시간(초). 전하 획득 시마다 초기화, 만료 시 전하 소멸
 const POST_HASTE_TIME = 2;
+const POST_E2_HASTE_TIME = 2; // 백스텝(E1) 사용 후 이속 +20% 지속시간(초)
 const W_HOLD_FULL = 2.5; // W 완충 후 바가 가득 찬 상태로 유지되다 자동 방출되기까지의 시간(초)
 const WORLD_SCALE = 10;
 const ATTACK_RATE = { melee: 1.5, ranged: 1.35 };
@@ -14,7 +17,8 @@ const RANGE = {
   R: 150,
   D_DASH: 185,
   ATTACK_MELEE: 152,
-  ATTACK_OVER: 420
+  ATTACK_OVER: 420,
+  F: 225
 };
 
 // 1m = E1 사거리 / 6.5. 이하 미터 기준 수치를 px로 환산해 RANGE에 반영.
@@ -23,13 +27,15 @@ RANGE.Q_NORMAL = 3.6 * M;   // Q1 사거리 3.6m
 RANGE.Q_WIDTH = 0.6 * M;    // Q1 폭 0.6m
 RANGE.Q_OVER = 7.5 * M;     // Q2 사거리 7.5m
 RANGE.W = 3.25 * M;         // W 반경 3.25m
+RANGE.E_WIDTH = 0.6 * M;    // E1(백스텝 사격) 폭 0.6m
 RANGE.E2 = 11 * M;          // E2 재사용 가능 거리 11m
 RANGE.R = 2.75 * M;         // 낙뢰 자체 반지름 2.75m
 RANGE.R_CAST = 6.5 * M;     // R 사용 사거리 6.5m
 RANGE.R_CENTER = 1 * M;     // 낙뢰 중심(CC) 범위 1m
-RANGE.ATTACK_MELEE = 1.65 * M; // 근접 평타 사거리 1.65m
+RANGE.ATTACK_MELEE = 2.3 * M; // 근접 평타 사거리 2.3m
 RANGE.ATTACK_OVER = 5 * M;     // 원거리 평타 사거리 5m
 RANGE.OVERCHARGE = 2.4 * M;    // 근→원거리 폼 전환에 필요한 "주변 적 없음" 범위 2.4m
+RANGE.F = 3 * M;               // F(전술 스킬) 사거리 3m
 const E_PROJECTILE_SPEED = 15.5 * M; // E 투사체 속도 15.5m/s (px/s)
 const MOVE_SPEED_DEFAULT = 4.08;     // 기본 이동 속도 4.08m/s (UI에서 조절)
 
@@ -93,14 +99,17 @@ const voices = {
 const state = {
   mode: "normal",
   charge: 0,
+  chargeDecay: 0,
   bullets: 0,
   overTime: 0,
   hasteTime: 0,
+  e2HasteTime: 0,
   cooldowns: {},
   recast: { W: 0, E: 0, R: 0 },
   wStart: 0,
   eDelay: 0,
   eRelock: 0,
+  eFreeBackstep: false,
   markedDummyId: null,
   lastHitDummyId: 1,
   moveTarget: null,
@@ -115,7 +124,7 @@ const state = {
   buffer: null,
   shiftHeld: false,
   rebinding: null,
-  keybinds: { Q: "KeyQ", W: "KeyW", E: "KeyE", R: "KeyR", D: "KeyD", F: "KeyF", A: "KeyA" },
+  keybinds: { Q: "KeyQ", W: "KeyW", E: "KeyE", R: "KeyR", D: "KeyD", F: "KeyF", A: "KeyA", S: "KeyS" },
   cursor: { x: 58, y: 50 },
   aiden: { x: 38, y: 56 },
   facing: 0,
@@ -123,6 +132,7 @@ const state = {
   pendingSkill: null,
   showAttackRange: false,
   attackMove: null,
+  debugMode: false,
   nextDummyId: 2,
   dummies: [
     { id: 1, x: 40, y: 55, hp: 100, vx: 1, vy: 0.35, seed: 0.4 }
@@ -146,12 +156,8 @@ const els = {
   overchargeRange: document.getElementById("overchargeRange"),
   qRange: document.getElementById("qRange"),
   eRange: document.getElementById("eRange"),
+  fRange: document.getElementById("fRange"),
   aRange: document.getElementById("aRange"),
-  modeText: document.getElementById("modeText"),
-  resourceLabel: document.getElementById("resourceLabel"),
-  chargeText: document.getElementById("chargeText"),
-  chargeSlots: document.getElementById("chargeSlots"),
-  modeTimer: document.getElementById("modeTimer"),
   dummyHp: document.getElementById("dummyHp"),
   dummyCount: document.getElementById("dummyCount"),
   autoFace: document.getElementById("autoFace"),
@@ -175,9 +181,12 @@ const els = {
   passiveDur: document.getElementById("passiveDur"),
   charStacks: document.getElementById("charStacks"),
   debug: document.getElementById("debug"),
+  speedReadout: document.getElementById("speedReadout"),
+  cooldownDebug: document.getElementById("cooldownDebug"),
   skillLog: document.getElementById("skillLog"),
   camSens: document.getElementById("camSens"),
   moveSpeed: document.getElementById("moveSpeed"),
+  attackSpeed: document.getElementById("attackSpeed"),
   keybinds: document.getElementById("keybinds"),
   skillSlots: [...document.querySelectorAll(".skill-slot")]
 };
@@ -219,6 +228,21 @@ function cameraSensitivity() {
 function moveSpeedMps() {
   const v = parseFloat(els.moveSpeed.value);
   return Number.isFinite(v) && v > 0 ? v : MOVE_SPEED_DEFAULT;
+}
+
+// 공격 속도(회/초): UI 입력값. 미설정 시 근접 기본값. 평타 쿨다운 = 1 / 공격속도.
+function attackSpeed() {
+  const v = parseFloat(els.attackSpeed.value);
+  return Number.isFinite(v) && v > 0 ? v : ATTACK_RATE.melee;
+}
+
+
+// 현재 실효 이동 속도(m/s) — 기본값에 W 차징 슬로우·패시브 가속·백스텝 가속을 곱한 값.
+function effectiveMoveSpeedMps() {
+  const slowed = state.recast.W > 0 && state.wStart > 0 ? 0.8 : 1;
+  const hasted = state.hasteTime > 0 ? 1.13 : 1;
+  const e2Haste = state.e2HasteTime > 0 ? 1.2 : 1;
+  return moveSpeedMps() * slowed * hasted * e2Haste;
 }
 
 // ===== 조작감 설정 (control.md 로더) =====
@@ -430,13 +454,13 @@ function pointSegmentDistancePx(point, a, b) {
 
 function lineHitDummies(start, end, radius = 40) {
   return state.dummies
-    .filter((dummy) => pointSegmentDistancePx(dummy, start, end) <= radius)
+    .filter((dummy) => pointSegmentDistancePx(dummy, start, end) <= radius + DUMMY_HIT_RADIUS)
     .sort((a, b) => distance(start, a) - distance(start, b));
 }
 
 function circleHitDummies(center, radius) {
   return state.dummies
-    .filter((dummy) => distance(center, dummy) <= radius)
+    .filter((dummy) => distance(center, dummy) <= radius + DUMMY_HIT_RADIUS)
     .sort((a, b) => distance(center, a) - distance(center, b));
 }
 
@@ -449,7 +473,7 @@ function coneHitDummies(range, widthDegrees, dir = direction()) {
     const len = Math.hypot(dx, dy) || 1;
     const dot = (dx / len) * dir.x + (dy / len) * dir.y;
     const angle = Math.acos(clamp(dot, -1, 1)) * 180 / Math.PI;
-    return len <= range && angle <= widthDegrees / 2;
+    return len <= range + DUMMY_HIT_RADIUS && angle <= widthDegrees / 2;
   }).sort((a, b) => distance(state.aiden, a) - distance(state.aiden, b));
 }
 
@@ -486,8 +510,12 @@ function shake() {
 
 function resetECooldownOnFullCharge(before) {
   if (before < MAX_CHARGE && state.charge >= MAX_CHARGE) {
+    // 풀차지 도달 시 백스텝(E) 쿨다운 초기화. 볼트 러시(재시전) 중이면 그 상태를 유지하되,
+    // 'E2 사용 후에도 백스텝 쿨 없음'을 보장하기 위해 플래그를 세운다(E2가 쿨을 다시 걸지 않도록).
     state.cooldowns.E = 0;
-    floating("E 쿨타임 초기화", state.aiden, "blue");
+    state.eRelock = 0;
+    if (state.recast.E > 0) state.eFreeBackstep = true;
+    floating("백스텝 초기화", state.aiden, "blue");
   }
 }
 
@@ -496,6 +524,7 @@ function addCharge(amount, reason = "") {
   const before = state.charge;
   state.charge = clamp(state.charge + amount, 0, MAX_CHARGE);
   if (state.charge > before && reason) floating(`전하 +${state.charge - before}`, state.aiden, "blue");
+  if (state.charge > 0) state.chargeDecay = CHARGE_DURATION; // 전하 획득 시마다 지속시간 초기화
   resetECooldownOnFullCharge(before);
 }
 
@@ -505,6 +534,8 @@ function enterOvercharge(reason = "") {
   state.bullets = MAX_CHARGE;
   state.overTime = OVERCHARGE_TIME;
   state.hasteTime = 0;
+  // 충전 중이던 W가 과전하로 취소될 때 쿨다운을 적용(쿨 초기화/무료 W 버그 방지)
+  if (state.wStart > 0 && cooldownOf("W") <= 0) setCooldown("W");
   state.recast.W = 0;
   state.wStart = 0;
   floating(reason || "과전하", state.aiden, "gold");
@@ -530,7 +561,7 @@ function consumeBullet(amount) {
     return false;
   }
   state.bullets -= amount;
-  if (state.bullets <= 0) leaveOvercharge();
+  if (state.bullets <= 0) leaveOvercharge(); // 탄환 소진 시 즉시 과전하 종료
   return true;
 }
 
@@ -550,8 +581,11 @@ function setCooldown(key, multiplier = 1) {
     return;
   }
   if (key === "Q") {
-    const cd = isOvercharged() ? skillDefs.Q.cooldownOver : skillDefs.Q.cooldownNormal;
-    state.cooldowns[currentQCooldownKey()] = cd * multiplier;
+    // 사용한 폼의 Q 쿨만 새로 시작한다(근거리 Q_NORMAL·원거리 Q_OVER는 서로 독립, 연결 없음).
+    // 반대 폼의 쿨은 건드리지 않고, 이미 돌고 있던 쿨은 updateTimers가 폼과 무관하게 계속 감소(내부 진행).
+    const cur = currentQCooldownKey();
+    const base = cur === "Q_OVER" ? skillDefs.Q.cooldownOver : skillDefs.Q.cooldownNormal;
+    state.cooldowns[cur] = base * multiplier;
     return;
   }
   state.cooldowns[key] = skillDefs[key].cooldown * multiplier;
@@ -585,7 +619,10 @@ function activeCast() {
 }
 
 function canUse(key) {
-  if (state.dash) return false; // 돌진 중에는 어떤 스킬도 사용 불가(E 시전 윈드업은 비차단이라 허용)
+  // 돌진 중에는 일반 스킬 불가. 단 재시전 이동(E2 볼트 러시·R2 낙뢰 이동)은 허용해 콤보(RER 등)가 이어지게 한다.
+  if (state.dash && !(key === "E" && isERecast()) && !(key === "R" && isRRecast())) return false;
+  // D(빗겨 흘리기) 시전 중에는 R·E 포함 모든 스킬 사용 불가.
+  if (isCasting("D") && key !== "D") return false;
   if (isWCharging() && key !== "W" && !(key === "E" && isERecast()) && !(key === "R" && isRRecast())) return false;
   if (key === "E" && isCasting("E")) return false;
   if (key === "R" && isCasting("R")) return false;
@@ -611,7 +648,8 @@ function logEvent(text, tone = "") {
 
 function beginCast(label, duration, onComplete, opts = {}) {
   logEvent(`▶ ${label} 시전`, "cast");
-  state.moveTarget = null; // 시전 시작 시 남아있던 클릭 이동 명령은 취소(재개하지 않음)
+  // 시전 시작 시 남아있던 클릭 이동 명령은 취소(재개하지 않음). 단 W(전하 소산)는 이동하며 충전하므로 예외.
+  if (opts.skill !== "W") state.moveTarget = null;
   state.casts.push({
     label,
     duration,
@@ -822,30 +860,41 @@ function basicAttack() {
       spawnBullet(state.aiden, target);
       damageDummy(target, 5, "평타");
     }
-    // 근거리 Q 쿨타임을 평타 적중당 1.5초 감소
-    state.cooldowns.Q_NORMAL = Math.max(0, (state.cooldowns.Q_NORMAL || 0) - 1.5);
-    const aps = overcharged ? ATTACK_RATE.ranged : ATTACK_RATE.melee;
+    // 평타 적중당 현재 모드의 Q(근거리=Q_NORMAL / 원거리=Q_OVER) 쿨타임을 1.5초 감소(근·원 Q 쿨 독립)
+    const qKey = currentQCooldownKey();
+    state.cooldowns[qKey] = Math.max(0, (state.cooldowns[qKey] || 0) - 1.5);
+    const aps = attackSpeed(); // 공격 속도(회/초) — 캐릭터 설정 입력값
     state.cooldowns.A = els.cooldownResetMode.checked ? 0 : 1 / aps;
   }, { skill: "A" });
+}
+
+// 지정한 Q 폼 키(Q_NORMAL/Q_OVER)에만 쿨 적용(쿨 초기화 모드면 둘 다 0).
+function setQCd(key, multiplier = 1) {
+  if (els.cooldownResetMode.checked) {
+    state.cooldowns.Q_NORMAL = 0;
+    state.cooldowns.Q_OVER = 0;
+    return;
+  }
+  const base = key === "Q_OVER" ? skillDefs.Q.cooldownOver : skillDefs.Q.cooldownNormal;
+  state.cooldowns[key] = base * multiplier;
 }
 
 function useQ() {
   if (!canUse("Q")) return;
   const dir = direction(); // 시전 시작 시점 방향으로 고정
   state.facing = dir.angle;
-  beginCast(getSkillName("Q"), isOvercharged() ? CAST.Q_OVER : CAST.Q_NORMAL, () => {
-    if (isOvercharged()) {
-      if (!consumeBullet(Math.min(2, state.bullets))) return;
+  // Q 폼(근/원)을 시전 시작 시점에 고정한다. 시전 중 과전하 진입/종료로 모드가 바뀌어도
+  // 시작 시점 폼으로 발동하고, 쿨도 그 폼의 키(Q_NORMAL/Q_OVER)에만 적용된다.
+  const ranged = isOvercharged();
+  beginCast(getSkillName("Q"), ranged ? CAST.Q_OVER : CAST.Q_NORMAL, () => {
+    if (ranged) {
       const end = offsetPoint(state.aiden, dir, RANGE.Q_OVER, false);
       const hits = lineHitDummies(state.aiden, end, 34);
       // 적중 시 탄환은 맞은 대상 지점에서 사라진다(끝까지 날아가지 않음)
       spawnBullet(state.aiden, hits[0] ? { x: hits[0].x, y: hits[0].y } : end, E_PROJECTILE_SPEED);
-      if (hits[0]) {
-        damageDummy(hits[0], 17, "전자포");
-        setCooldown("Q", 0.5);
-      } else {
-        setCooldown("Q");
-      }
+      if (hits[0]) damageDummy(hits[0], 17, "전자포");
+      setQCd("Q_OVER", hits[0] ? 0.5 : 1); // 원거리 Q 쿨은 항상 Q_OVER에(적중 시 0.5배)
+      consumeBullet(Math.min(2, state.bullets));
     } else {
       const end = offsetPoint(state.aiden, dir, RANGE.Q_NORMAL, false);
       const hits = lineHitDummies(state.aiden, end, RANGE.Q_WIDTH / 2);
@@ -854,7 +903,7 @@ function useQ() {
         damageDummy(hits[0], 13, "뇌격");
         addCharge(2, "Q");
       }
-      setCooldown("Q");
+      setQCd("Q_NORMAL", 1); // 근거리 Q 쿨은 항상 Q_NORMAL에
     }
   }, { skill: "Q" });
 }
@@ -895,7 +944,7 @@ function useW() {
       state.recast.W = skillDefs.W.chargeTime + W_HOLD_FULL;
       state.wStart = nowSeconds();
       spawnCircle(state.aiden, RANGE.W * 2, "fx-circle");
-    });
+    }, { skill: "W" });
     return;
   }
 
@@ -915,21 +964,26 @@ function useE() {
       floating("볼트 러시 사거리 밖", state.aiden, "gold");
       return;
     }
-    beginCast("볼트 러시", CAST.E2, () => {
-      playVoice("E2");
-      // 대상에게 유도로 날아가 적 뒤까지 이동(접근 방향 = 에이든→대상, 그 연장선으로 1.5m 통과)
-      const toTarget = direction(state.aiden, target);
-      const through = offsetPoint(target, toTarget, 1.5 * M, true);
-      spawnLine(state.aiden, through, "fx-line", 11);
-      const flyDur = Math.max(0.1, distance(state.aiden, through) / 1560);
-      dashTo(through, flyDur, true, "E2");
-      state.eRelock = flyDur * 0.7;
-      damageDummy(target, 16, "볼트 러시");
-      addCharge(1, "E");
-      state.markedDummyId = null;
-      state.recast.E = 0;
+    // E2(볼트 러시)는 시전시간 없이 즉시 발동. 대상에게 유도로 날아가 적 뒤까지 이동(접근 방향 = 에이든→대상, 그 연장선으로 1.5m 통과)
+    playVoice("E2");
+    const toTarget = direction(state.aiden, target);
+    const through = offsetPoint(target, toTarget, 1.5 * M, true);
+    spawnLine(state.aiden, through, "fx-line", 11);
+    const flyDur = Math.max(0.1, distance(state.aiden, through) / 1560);
+    dashTo(through, flyDur, true, "E2");
+    state.eRelock = flyDur * 0.7;
+    damageDummy(target, 16, "볼트 러시");
+    addCharge(1, "E");
+    state.markedDummyId = null;
+    state.recast.E = 0;
+    // 볼트 러시 중 백스텝 초기화가 있었다면 쿨 없이 즉시 백스텝 가능(쿨 재적용 안 함)
+    if (state.eFreeBackstep) {
+      state.cooldowns.E = 0;
+      state.eRelock = 0;
+      state.eFreeBackstep = false;
+    } else {
       setCooldown("E");
-    }, { blocking: false, skill: "E" });
+    }
     return;
   }
 
@@ -937,10 +991,21 @@ function useE() {
     playVoice("E1");
     const bulletEnd = offsetPoint(state.aiden, dir, RANGE.E1, false);
     const backPoint = offsetPoint(state.aiden, { x: -dir.x, y: -dir.y }, 3 * M, true);
-    const hits = lineHitDummies(state.aiden, bulletEnd, 54);
-    // 적중 시 탄환은 맞은 대상 지점에서 사라진다(끝까지 날아가지 않음)
-    spawnBullet(state.aiden, hits[0] ? { x: hits[0].x, y: hits[0].y } : bulletEnd, E_PROJECTILE_SPEED);
+    const hits = lineHitDummies(state.aiden, bulletEnd, RANGE.E_WIDTH / 2); // E1 폭 0.6m(반폭 0.3m)
+    // 탄환은 캐릭터 중앙이 아니라 바라보는 방향으로 0.5m 앞에서 발사
+    const bulletStart = offsetPoint(state.aiden, dir, 0.5 * M, false);
+    // 탄환은 정확히 마우스 방향(dir) 직선으로만 날아간다. 적중 시 더미의 실제 위치가 아니라
+    // 그 직선상의 명중 지점(투영)까지만 날아가 사라진다(유도처럼 휘지 않음).
+    let bulletTarget = bulletEnd;
+    if (hits[0]) {
+      const sPx = toPx(bulletStart);
+      const hPx = toPx(hits[0]);
+      const proj = clamp((hPx.x - sPx.x) * dir.x + (hPx.y - sPx.y) * dir.y, 0, RANGE.E1);
+      bulletTarget = fromPx({ x: sPx.x + dir.x * proj, y: sPx.y + dir.y * proj });
+    }
+    spawnBullet(bulletStart, bulletTarget, E_PROJECTILE_SPEED);
     dashTo(backPoint, 0.18);
+    state.e2HasteTime = POST_E2_HASTE_TIME; // 백스텝(E1) 사용 후 2초 이속 +20%
     if (hits[0]) {
       damageDummy(hits[0], 7, "백스텝");
       state.markedDummyId = hits[0].id;
@@ -970,18 +1035,17 @@ function castSecondLightning() {
 function useR() {
   if (!canUse("R")) return;
   if (state.recast.R > 0 && state.rTarget) {
-    beginCast("낙뢰 이동", CAST.R2, () => {
-      playVoice("R");
-      spawnLine(state.aiden, state.rTarget, "fx-line", 9);
-      dashTo(state.rTarget, 0.16);
-      if (state.rHit) {
-        const before = state.charge;
-        state.charge = MAX_CHARGE;
-        resetECooldownOnFullCharge(before);
-        floating("전하 최대", state.aiden, "gold");
-      }
-      castSecondLightning();
-    }, { blocking: false, skill: "R" });
+    // R2(낙뢰 이동)는 시전시간 없이 즉시 발동, 텔레포트도 거의 즉시(섞은 스킬이 이동 후 그 위치에서 나가도록)
+    playVoice("R");
+    spawnLine(state.aiden, state.rTarget, "fx-line", 9);
+    dashTo(state.rTarget, 0.05);
+    if (state.rHit) {
+      const before = state.charge;
+      state.charge = MAX_CHARGE;
+      resetECooldownOnFullCharge(before);
+      floating("전하 최대", state.aiden, "gold");
+    }
+    castSecondLightning();
     return;
   }
 
@@ -1017,8 +1081,7 @@ function useD() {
     spawnLine(state.aiden, end, "fx-line", 11);
     dashTo(end, 0.14);
     lineHitDummies(state.aiden, end, 48).forEach((dummy) => {
-      damageDummy(dummy, 14, "반격");
-      addCharge(1, "D");
+      damageDummy(dummy, 14, "반격"); // D는 전하를 쌓지 않음
     });
     setCooldown("D");
   }, { skill: "D" });
@@ -1030,7 +1093,7 @@ function useF() {
   const dir = direction(); // 시전 시작 시점 방향으로 고정
   state.facing = dir.angle;
   beginCast("전술 스킬", CAST.F, () => {
-    const point = offsetPoint(state.aiden, dir, 225, true);
+    const point = offsetPoint(state.aiden, dir, RANGE.F, true);
     spawnLine(state.aiden, point, "fx-line", 6);
     dashTo(point, 0.11);
     setCooldown("F");
@@ -1058,6 +1121,8 @@ function requestSkill(key) {
   if (canUse(key)) {
     useSkill(key);
   } else {
+    // 빗겨 흘리기(D) 시전 중에는 R2(낙뢰 이동)·E2(볼트 러시)를 선입력(버퍼)하지 않는다.
+    if (isCasting("D") && ((key === "E" && isERecast()) || (key === "R" && isRRecast()))) return;
     state.buffer = { type: "skill", key, time: nowSeconds() };
   }
 }
@@ -1073,6 +1138,8 @@ function requestMove(point) {
 function flushBuffer() {
   const b = state.buffer;
   if (!b) return;
+  // 차단 캐스트가 진행 중이면(예: R1 0.34초) 버퍼 나이를 리셋해 유지 — 긴 시전 동안 입력이 버려지지 않고, 시전이 끝나면 바로 실행(RW 등 부드럽게).
+  if (hasBlockingCast()) b.time = nowSeconds();
   const maxAge = b.type === "skill" ? CFG.input.skillBufferTime : CFG.input.movementBufferTime;
   if (nowSeconds() - b.time > maxAge) {
     state.buffer = null;
@@ -1129,8 +1196,9 @@ function updateMovement(delta) {
     return;
   }
 
-  // 시전 시간 동안에는 이동 불가(어떤 스킬 캐스트든). E 돌진·R2 텔레포트 등 스킬 이동은 위의 state.dash가 먼저 처리하므로 예외.
-  if (state.casts.length > 0) return;
+  // 시전 시간 동안에는 이동 불가. 단 W(전하 소산)는 이동하며 충전하므로 W 캐스트는 정지 대상에서 제외.
+  // E 돌진·R2 텔레포트 등 스킬 이동은 위의 state.dash가 먼저 처리하므로 예외.
+  if (state.casts.some((c) => c.skill !== "W")) return;
   if (!state.moveTarget) return;
   const pos = toPx(state.aiden);
   const target = toPx(state.moveTarget);
@@ -1141,9 +1209,7 @@ function updateMovement(delta) {
     state.moveTarget = null;
     return;
   }
-  const slowed = state.recast.W > 0 && state.wStart > 0 ? 0.8 : 1; // W 차징 중 이속 20% 감소
-  const hasted = state.hasteTime > 0 ? 1.13 : 1;                    // 패시브(P) 종료 가속 13% 증가
-  const speed = moveSpeedMps() * M * slowed * hasted;
+  const speed = effectiveMoveSpeedMps() * M; // 실효 이속(m/s) → 월드 px/s
   const step = Math.min(len, speed * delta);
   state.aiden = clampPoint(fromPx({ x: pos.x + dx / len * step, y: pos.y + dy / len * step }), 6);
 }
@@ -1182,6 +1248,7 @@ function updateTimers(delta) {
   });
   state.eDelay = Math.max(0, state.eDelay - delta);
   state.eRelock = Math.max(0, state.eRelock - delta);
+  state.e2HasteTime = Math.max(0, (state.e2HasteTime || 0) - delta);
 
   if (state.recast.W <= 0 && state.wStart > 0 && !hasBlockingCast()) {
     releaseW(); // 완충 유지 시간이 끝나면 시전시간 없이 자동 방출
@@ -1189,6 +1256,7 @@ function updateTimers(delta) {
 
   if (state.recast.E <= 0 && state.markedDummyId) {
     state.markedDummyId = null;
+    state.eFreeBackstep = false; // 볼트 러시 미사용 만료 시 플래그 정리
     setCooldown("E");
   }
 
@@ -1201,6 +1269,14 @@ function updateTimers(delta) {
     if (state.overTime <= 0) leaveOvercharge();
   } else {
     state.hasteTime = Math.max(0, state.hasteTime - delta);
+    // 전하 지속시간: 획득이 멈춘 채 CHARGE_DURATION 경과하면 전하 소멸
+    if (state.charge > 0) {
+      state.chargeDecay = Math.max(0, state.chargeDecay - delta);
+      if (state.chargeDecay <= 0) {
+        state.charge = 0;
+        floating("전하 소멸", state.aiden, "gold");
+      }
+    }
     if (state.charge >= MAX_CHARGE && !enemyNearby()) enterOvercharge("거리 확보 과전하");
   }
 }
@@ -1223,7 +1299,7 @@ function positionLine(el, start, dir, range, height = 16) {
 }
 
 function renderRanges() {
-  [els.wRange, els.e2Range, els.rRange, els.rCastRange, els.overchargeRange, els.qRange, els.eRange, els.aRange].forEach((el) => el.classList.remove("show"));
+  [els.wRange, els.e2Range, els.rRange, els.rCastRange, els.overchargeRange, els.qRange, els.eRange, els.fRange, els.aRange].forEach((el) => el.classList.remove("show"));
   const dir = direction();
   // 사거리 표시 상태에서 스킬 키를 누르는 동안(pendingSkill)에만 해당 스킬 사거리를 표시
   const preview = (els.rangePreview.checked && state.pendingSkill) ? state.pendingSkill : "";
@@ -1239,7 +1315,7 @@ function renderRanges() {
     els.aRange.classList.add("show");
   }
 
-  if (state.wStart > 0) {
+  if (state.wStart > 0 || isCasting("W")) {
     positionCircle(els.wRange, state.aiden, RANGE.W);
     els.wRange.classList.add("show");
   }
@@ -1258,6 +1334,11 @@ function renderRanges() {
   if (preview === "E" && !marked) {
     positionLine(els.eRange, state.aiden, dir, RANGE.E1, 18);
     els.eRange.classList.add("show");
+  }
+
+  if (preview === "F") {
+    positionCircle(els.fRange, state.aiden, RANGE.F);
+    els.fRange.classList.add("show");
   }
 
   if (state.rTarget) {
@@ -1320,24 +1401,18 @@ function renderUnits() {
 }
 
 function renderPanel() {
-  const resource = isOvercharged() ? state.bullets : state.charge;
-  els.modeText.textContent = isOvercharged() ? "과전하" : state.hasteTime > 0 ? "가속" : "일반";
-  els.resourceLabel.textContent = isOvercharged() ? "탄환" : "전하";
-  els.chargeText.textContent = `${resource} / ${MAX_CHARGE}`;
-  els.chargeSlots.innerHTML = Array.from({ length: MAX_CHARGE }, (_, index) => {
-    const filled = index < resource ? "filled" : "";
-    const bullet = isOvercharged() ? "bullet" : "";
-    return `<span class="${filled} ${bullet}"></span>`;
-  }).join("");
-  els.modeTimer.style.width = `${isOvercharged() ? state.overTime / OVERCHARGE_TIME * 100 : state.hasteTime / POST_HASTE_TIME * 100}%`;
-
   const recent = lastHitDummy();
   els.dummyHp.style.width = `${recent ? recent.hp : 0}%`;
   els.dummyCount.textContent = `더미 ${state.dummies.length}개`;
 
   const over = isOvercharged();
-  els.passiveSlot.classList.toggle("active", over);
-  els.passiveDur.textContent = over ? `${Math.ceil(state.overTime)}` : "";
+  // P 아이콘: 과전하 중엔 과전하 잔여시간, 일반 모드에서 전하가 있으면 전하 지속시간을 표시
+  els.passiveSlot.classList.toggle("active", over || state.charge > 0);
+  els.passiveDur.textContent = over
+    ? `${Math.ceil(state.overTime)}`
+    : (state.charge > 0 ? `${Math.ceil(state.chargeDecay)}` : "");
+
+  els.speedReadout.textContent = `이속 ${effectiveMoveSpeedMps().toFixed(2)} m/s`;
 }
 
 function renderCast() {
@@ -1375,7 +1450,7 @@ function keyLabel(code) {
 }
 
 function renderKeybinds() {
-  const actions = ["Q", "W", "E", "R", "D", "F", "A"];
+  const actions = ["Q", "W", "E", "R", "D", "F", "A", "S"];
   els.keybinds.innerHTML = actions.map((a) => {
     const listening = state.rebinding === a;
     return `<button class="keybind ${listening ? "listening" : ""}" data-action="${a}">${a}<b>${listening ? "..." : keyLabel(state.keybinds[a])}</b></button>`;
@@ -1398,12 +1473,37 @@ function renderSkills() {
   });
 }
 
+function renderCooldownDebug() {
+  if (!state.debugMode) {
+    els.cooldownDebug.classList.remove("show");
+    return;
+  }
+  els.cooldownDebug.classList.add("show");
+  const cd = (v) => (v > 0.05 ? `${v.toFixed(1)}s` : "준비");
+  const c = state.cooldowns;
+  const rows = [
+    `Q근 ${cd(c.Q_NORMAL || 0)}`,
+    `Q원 ${cd(c.Q_OVER || 0)}`,
+    `W ${cd(c.W || 0)}`,
+    `E ${cd(c.E || 0)}`,
+    `R ${cd(c.R || 0)}`,
+    `D ${cd(c.D || 0)}`,
+    `F ${cd(c.F || 0)}`,
+    `평타 ${cd(c.A || 0)}`,
+    `재시전 W${(state.recast.W || 0).toFixed(1)} E${(state.recast.E || 0).toFixed(1)} R${(state.recast.R || 0).toFixed(1)}`,
+    `전하 ${state.charge} (소산 ${state.chargeDecay.toFixed(1)}s)`,
+    `과전하 ${isOvercharged() ? `${state.overTime.toFixed(1)}s · 탄환 ${state.bullets}` : "-"}`
+  ];
+  els.cooldownDebug.innerHTML = rows.map((r) => `<div>${r}</div>`).join("");
+}
+
 function render() {
   renderUnits();
   renderRanges();
   renderPanel();
   renderCast();
   renderSkills();
+  renderCooldownDebug();
 }
 
 function charStateLabel() {
@@ -1582,6 +1682,14 @@ window.addEventListener("keydown", (event) => {
   const action = Object.keys(state.keybinds).find((a) => state.keybinds[a] === event.code);
   if (!action) return;
   event.preventDefault();
+  if (action === "S") {
+    // S: 진행 중이던 이동 정지(클릭 이동·추격 평타·버퍼된 이동 명령 취소). 돌진 등 스킬 이동은 유지.
+    state.moveTarget = null;
+    state.attackMove = null;
+    if (state.buffer && state.buffer.type === "move") state.buffer = null;
+    render();
+    return;
+  }
   // A 키: 평타 사거리 표시. 키를 떼도 유지되고, 이동 명령 시 해제(`moveTo`).
   if (action === "A") {
     if (!event.repeat) {
@@ -1659,7 +1767,15 @@ els.cooldownResetMode.addEventListener("change", () => {
   render();
 });
 
+// F12 콘솔에서 디버그(쿨타임 표시)를 켜고 끈다: debug() 토글, debug(true)/debug(false)
+window.debug = function (on) {
+  state.debugMode = on === undefined ? !state.debugMode : !!on;
+  console.log(`[debug] 쿨타임 표시 ${state.debugMode ? "ON" : "OFF"} — debug(true)/debug(false)/debug()`);
+  return state.debugMode;
+};
+
 renderKeybinds();
 loadControlConfig();
 reset();
 requestAnimationFrame(tick);
+console.info("[디버그] 콘솔에서 debug() 입력 시 쿨타임 표시 ON/OFF");
