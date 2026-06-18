@@ -1,6 +1,7 @@
 const MAX_CHARGE = 5;
 const OVERCHARGE_TIME = 10;
 const POST_HASTE_TIME = 2;
+const W_HOLD_FULL = 2.5; // W 완충 후 바가 가득 찬 상태로 유지되다 자동 방출되기까지의 시간(초)
 const WORLD_SCALE = 10;
 const ATTACK_RATE = { melee: 1.5, ranged: 1.35 };
 
@@ -8,13 +9,29 @@ const RANGE = {
   Q_NORMAL: 168,
   Q_OVER: 470,
   W: 190,
-  E1: 410,
-  E2: 440,
+  E1: 242,
+  E2: 484,
   R: 150,
   D_DASH: 185,
   ATTACK_MELEE: 152,
   ATTACK_OVER: 420
 };
+
+// 1m = E1 사거리 / 6.5. 이하 미터 기준 수치를 px로 환산해 RANGE에 반영.
+const M = RANGE.E1 / 6.5;
+RANGE.Q_NORMAL = 3.6 * M;   // Q1 사거리 3.6m
+RANGE.Q_WIDTH = 0.6 * M;    // Q1 폭 0.6m
+RANGE.Q_OVER = 7.5 * M;     // Q2 사거리 7.5m
+RANGE.W = 3.25 * M;         // W 반경 3.25m
+RANGE.E2 = 11 * M;          // E2 재사용 가능 거리 11m
+RANGE.R = 2.75 * M;         // 낙뢰 자체 반지름 2.75m
+RANGE.R_CAST = 6.5 * M;     // R 사용 사거리 6.5m
+RANGE.R_CENTER = 1 * M;     // 낙뢰 중심(CC) 범위 1m
+RANGE.ATTACK_MELEE = 1.65 * M; // 근접 평타 사거리 1.65m
+RANGE.ATTACK_OVER = 5 * M;     // 원거리 평타 사거리 5m
+RANGE.OVERCHARGE = 2.4 * M;    // 근→원거리 폼 전환에 필요한 "주변 적 없음" 범위 2.4m
+const E_PROJECTILE_SPEED = 15.5 * M; // E 투사체 속도 15.5m/s (px/s)
+const MOVE_SPEED_DEFAULT = 4.08;     // 기본 이동 속도 4.08m/s (UI에서 조절)
 
 const CAST = {
   Q_NORMAL: 0.216,
@@ -22,7 +39,7 @@ const CAST = {
   W_START: 0.12,
   W_RELEASE: 0.2,
   E1: 0.16,
-  E2: 0.2,
+  E2: 0.05,
   R1: 0.34,
   R2: 0.12,
   D: 0.55,
@@ -82,6 +99,8 @@ const state = {
   cooldowns: {},
   recast: { W: 0, E: 0, R: 0 },
   wStart: 0,
+  eDelay: 0,
+  eRelock: 0,
   markedDummyId: null,
   lastHitDummyId: 1,
   moveTarget: null,
@@ -93,12 +112,17 @@ const state = {
   spaceHeld: false,
   pointer: { x: 0, y: 0 },
   placingDummy: false,
+  buffer: null,
+  shiftHeld: false,
   rebinding: null,
   keybinds: { Q: "KeyQ", W: "KeyW", E: "KeyE", R: "KeyR", D: "KeyD", F: "KeyF", A: "KeyA" },
   cursor: { x: 58, y: 50 },
   aiden: { x: 38, y: 56 },
   facing: 0,
   previewSkill: "Q",
+  pendingSkill: null,
+  showAttackRange: false,
+  attackMove: null,
   nextDummyId: 2,
   dummies: [
     { id: 1, x: 40, y: 55, hp: 100, vx: 1, vy: 0.35, seed: 0.4 }
@@ -118,6 +142,8 @@ const els = {
   wRange: document.getElementById("wRange"),
   e2Range: document.getElementById("e2Range"),
   rRange: document.getElementById("rRange"),
+  rCastRange: document.getElementById("rCastRange"),
+  overchargeRange: document.getElementById("overchargeRange"),
   qRange: document.getElementById("qRange"),
   eRange: document.getElementById("eRange"),
   aRange: document.getElementById("aRange"),
@@ -148,7 +174,10 @@ const els = {
   passiveSlot: document.getElementById("passiveSlot"),
   passiveDur: document.getElementById("passiveDur"),
   charStacks: document.getElementById("charStacks"),
+  debug: document.getElementById("debug"),
+  skillLog: document.getElementById("skillLog"),
   camSens: document.getElementById("camSens"),
+  moveSpeed: document.getElementById("moveSpeed"),
   keybinds: document.getElementById("keybinds"),
   skillSlots: [...document.querySelectorAll(".skill-slot")]
 };
@@ -184,6 +213,86 @@ function camMargin() {
 function cameraSensitivity() {
   const v = parseFloat(els.camSens.value);
   return Number.isFinite(v) && v > 0 ? v : 20;
+}
+
+// 이동 속도: UI 입력값(m/s)을 읽어 월드 px/s로 환산. 미설정 시 기본값.
+function moveSpeedMps() {
+  const v = parseFloat(els.moveSpeed.value);
+  return Number.isFinite(v) && v > 0 ? v : MOVE_SPEED_DEFAULT;
+}
+
+// ===== 조작감 설정 (control.md 로더) =====
+const CONTROL_DEFAULTS = {
+  movement: { moveSpeed: 151.9, arrivalRadius: 4, turnInstantlyOnMoveCommand: true, stopOnSkillCast: true },
+  camera: { followPlayer: true, smoothFollow: false, followLerp: 0.15, zoom: 1.5 },
+  input: {
+    defaultCastMode: "quickCast", moveCommandButton: "right", attackOrConfirmButton: "left",
+    cancelSkillOnRightClick: true, rightClickDuringAimingAlsoMoves: true,
+    inputBufferTime: 0.18, skillBufferTime: 0.2, movementBufferTime: 0.12, targetClickRadius: 22
+  },
+  skillCommon: { clampAimToRange: true, faceMouseOnCast: false, showRangeIndicator: true, showHitboxDebug: false, allowSkillQueueDuringRecovery: true },
+  skills: {},
+  debug: { showMouseWorldPosition: false, showDestination: false, showFacingDirection: false, showSkillRange: false, showSkillHitbox: false, showStateText: false }
+};
+
+const CFG = JSON.parse(JSON.stringify(CONTROL_DEFAULTS));
+
+function mergeConfig(target, src) {
+  Object.keys(src).forEach((k) => {
+    const val = src[k];
+    if (val && typeof val === "object" && !Array.isArray(val)) {
+      if (!target[k] || typeof target[k] !== "object") target[k] = {};
+      mergeConfig(target[k], val);
+    } else {
+      target[k] = val;
+    }
+  });
+  return target;
+}
+
+function validateConfig() {
+  const warn = (m) => console.warn("[control] 설정 경고:", m);
+  if (!(CFG.movement.moveSpeed > 0)) warn("movement.moveSpeed는 0보다 커야 합니다");
+  if (!(CFG.camera.zoom > 0)) warn("camera.zoom은 0보다 커야 합니다");
+  if (!(CFG.camera.followLerp > 0 && CFG.camera.followLerp <= 1)) warn("camera.followLerp는 0~1 범위여야 합니다");
+  ["inputBufferTime", "skillBufferTime", "movementBufferTime"].forEach((k) => {
+    if (!(CFG.input[k] >= 0)) warn(`input.${k}는 0 이상이어야 합니다`);
+  });
+}
+
+function applyConfig() {
+  CAMERA.zoom = CFG.camera.zoom;
+  // control.md의 moveSpeed(px)를 m/s로 환산해 이동속도 입력의 시작값으로 사용(이후 UI가 우선).
+  if (els.moveSpeed && CFG.movement.moveSpeed > 0) els.moveSpeed.value = (CFG.movement.moveSpeed / M).toFixed(2);
+  const sk = CFG.skills || {};
+  Object.keys(sk).forEach((k) => {
+    const cd = sk[k] && sk[k].cooldown;
+    if (cd == null || !skillDefs[k]) return;
+    if (k === "Q") {
+      skillDefs.Q.cooldownNormal = cd;
+      skillDefs.Q.cooldownOver = cd;
+    } else {
+      skillDefs[k].cooldown = cd;
+    }
+  });
+}
+
+async function loadControlConfig() {
+  try {
+    const res = await fetch("control.md", { cache: "no-store" });
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const text = await res.text();
+    const blocks = [...text.matchAll(/```json\s*([\s\S]*?)```/g)];
+    const jsonText = blocks.map((b) => b[1].trim()).find((t) => t.startsWith("{"));
+    if (!jsonText) throw new Error("json 코드블록(내용이 { 로 시작)을 찾지 못했습니다");
+    const parsed = JSON.parse(jsonText);
+    mergeConfig(CFG, parsed);
+    validateConfig();
+    applyConfig();
+    console.info("[control] control.md 적용 완료", CFG);
+  } catch (e) {
+    console.warn("[control] control.md 로드/파싱 실패 — 기본값 사용:", e.message);
+  }
 }
 
 // LoL식 원근 카메라: #world를 rotateX로 기울이고 zoom으로 확대하며,
@@ -227,10 +336,15 @@ function pointFromEvent(event) {
 }
 
 function updateCamera(delta) {
-  const follow = els.cameraLock.checked || state.spaceHeld;
+  const follow = CFG.camera.followPlayer && (els.cameraLock.checked || state.spaceHeld);
   if (follow) {
-    state.cam.x = state.aiden.x;
-    state.cam.y = state.aiden.y;
+    if (CFG.camera.smoothFollow) {
+      state.cam.x += (state.aiden.x - state.cam.x) * CFG.camera.followLerp;
+      state.cam.y += (state.aiden.y - state.cam.y) * CFG.camera.followLerp;
+    } else {
+      state.cam.x = state.aiden.x;
+      state.cam.y = state.aiden.y;
+    }
   } else {
     const rect = fieldRect();
     const edge = 64;
@@ -340,7 +454,7 @@ function coneHitDummies(range, widthDegrees, dir = direction()) {
 }
 
 function enemyNearby() {
-  return state.dummies.some((dummy) => distance(state.aiden, dummy) <= 210);
+  return state.dummies.some((dummy) => distance(state.aiden, dummy) <= RANGE.OVERCHARGE);
 }
 
 let activeVoice = null;
@@ -471,18 +585,33 @@ function activeCast() {
 }
 
 function canUse(key) {
+  if (state.dash) return false; // 돌진 중에는 어떤 스킬도 사용 불가(E 시전 윈드업은 비차단이라 허용)
   if (isWCharging() && key !== "W" && !(key === "E" && isERecast()) && !(key === "R" && isRRecast())) return false;
   if (key === "E" && isCasting("E")) return false;
   if (key === "R" && isCasting("R")) return false;
   if (key !== "E" && !(key === "R" && isRRecast()) && hasBlockingCast()) return false;
   if (cooldownOf(key) > 0) return false;
   if (key === "E" && state.recast.E > 0 && !markedDummy()) return false;
+  if (key === "E" && state.recast.E > 0 && state.eDelay > 0) return false;
+  if (key === "E" && state.eRelock > 0) return false;
   if (key === "Q" && isOvercharged() && state.bullets < 1) return false;
   if (key === "A" && isOvercharged() && state.bullets < 1) return false;
   return true;
 }
 
+// 좌측 하단 스킬 로그: 최근 항목을 아래에 추가하고 오래된 것은 제거
+function logEvent(text, tone = "") {
+  if (!els.skillLog) return;
+  const line = document.createElement("div");
+  line.className = `log-line${tone ? " " + tone : ""}`;
+  line.textContent = text;
+  els.skillLog.appendChild(line);
+  while (els.skillLog.childElementCount > 8) els.skillLog.firstElementChild.remove();
+}
+
 function beginCast(label, duration, onComplete, opts = {}) {
+  logEvent(`▶ ${label} 시전`, "cast");
+  state.moveTarget = null; // 시전 시작 시 남아있던 클릭 이동 명령은 취소(재개하지 않음)
   state.casts.push({
     label,
     duration,
@@ -495,17 +624,13 @@ function beginCast(label, duration, onComplete, opts = {}) {
 
 function damageDummy(dummy, amount, label) {
   if (!dummy || amount <= 0) return;
-  dummy.hp = clamp(dummy.hp - amount, 0, 100);
+  dummy.hp = clamp(dummy.hp - amount, 1, 100); // 죽지 않고 체력 최소 1로 고정
+  dummy.regenDelay = 1.2;                       // 피격 후 잠깐 뒤부터 자연 회복
   state.lastHitDummyId = dummy.id;
   floating("Hit", dummy, "hit");
   spawnHit(dummy);
   shake();
-  if (dummy.hp <= 0) {
-    setTimeout(() => {
-      dummy.hp = 100;
-      if (state.markedDummyId === dummy.id) state.markedDummyId = null;
-    }, 450);
-  }
+  logEvent(`✔ ${label || "타격"} 명중 (-${amount})`, "hit");
 }
 
 function floating(text, point, tone = "hit") {
@@ -570,17 +695,19 @@ function spawnSlash(angle) {
   setTimeout(() => el.remove(), 700);
 }
 
-function spawnBullet(start, end) {
+function spawnBullet(start, end, speed) {
   const a = toPx(start);
   const b = toPx(end);
+  const dur = speed ? Math.max(0.1, Math.hypot(b.x - a.x, b.y - a.y) / speed) : 0.36;
   const el = document.createElement("div");
   el.className = "effect fx-bullet";
   el.style.left = `${a.x}px`;
   el.style.top = `${a.y}px`;
   el.style.setProperty("--bx", `${b.x - a.x}px`);
   el.style.setProperty("--by", `${b.y - a.y}px`);
+  el.style.animationDuration = `${dur}s`;
   els.world.appendChild(el);
-  setTimeout(() => el.remove(), 400);
+  setTimeout(() => el.remove(), dur * 1000 + 50);
 }
 
 function spawnAfterimage(point) {
@@ -640,15 +767,17 @@ function addTrail(point = state.aiden) {
   setTimeout(() => el.remove(), 500);
 }
 
-function dashTo(point, duration = 0.18) {
+function dashTo(point, duration = 0.18, linear = false, tag = null) {
   state.moveTarget = null;
-  state.dash = { from: { ...state.aiden }, to: clampPoint(point, 6), elapsed: 0, duration };
+  state.dash = { from: { ...state.aiden }, to: clampPoint(point, 6), elapsed: 0, duration, linear, tag };
   addTrail(state.aiden);
 }
 
 function moveTo(point) {
+  state.showAttackRange = false; // 땅을 클릭해 이동하면 평타 사거리 표시 해제
+  state.attackMove = null;       // 명시적 이동 명령은 추격 취소
   state.moveTarget = clampPoint(point, 6);
-  state.facing = direction(state.aiden, state.moveTarget).angle;
+  if (CFG.movement.turnInstantlyOnMoveCommand) state.facing = direction(state.aiden, state.moveTarget).angle;
   const p = toPx(state.moveTarget);
   els.movePoint.style.left = `${p.x}px`;
   els.movePoint.style.top = `${p.y}px`;
@@ -674,26 +803,27 @@ function getSkillIcon(key) {
 
 function basicAttack() {
   if (!canUse("A")) return;
+  const overcharged = isOvercharged();
+  const range = overcharged ? RANGE.ATTACK_OVER : RANGE.ATTACK_MELEE;
+  // 시전 시작 시점에 사거리 내 최근접 더미를 대상으로 고정. 사거리 밖이면 평타가 나가지 않음.
+  const target = state.dummies
+    .filter((dummy) => distance(state.aiden, dummy) <= range)
+    .sort((a, b) => distance(state.aiden, a) - distance(state.aiden, b))[0] || null;
+  if (!target) return;
+  const dir = direction(state.aiden, target);
+  state.facing = dir.angle;
   beginCast(getSkillName("A"), CAST.A, () => {
-    const overcharged = isOvercharged();
-    const range = overcharged ? RANGE.ATTACK_OVER : RANGE.ATTACK_MELEE;
-    const target = state.dummies
-      .filter((dummy) => distance(state.aiden, dummy) <= range)
-      .sort((a, b) => distance(state.aiden, a) - distance(state.aiden, b))[0] || null;
-    const dir = direction(state.aiden, target || state.cursor);
-    if (target) state.facing = dir.angle;
     if (overcharged) {
       if (!consumeBullet(1)) return;
-      spawnBullet(state.aiden, target || offsetPoint(state.aiden, dir, range, false));
-      if (target) damageDummy(target, 8, "치명 원거리");
+      spawnBullet(state.aiden, target);
+      damageDummy(target, 8, "치명 원거리");
     } else {
       spawnSlash(dir.angle);
-      if (target) {
-        spawnBullet(state.aiden, target);
-        damageDummy(target, 5, "평타");
-        state.cooldowns.Q_NORMAL = Math.max(0, (state.cooldowns.Q_NORMAL || 0) - 1.5);
-      }
+      spawnBullet(state.aiden, target);
+      damageDummy(target, 5, "평타");
     }
+    // 근거리 Q 쿨타임을 평타 적중당 1.5초 감소
+    state.cooldowns.Q_NORMAL = Math.max(0, (state.cooldowns.Q_NORMAL || 0) - 1.5);
     const aps = overcharged ? ATTACK_RATE.ranged : ATTACK_RATE.melee;
     state.cooldowns.A = els.cooldownResetMode.checked ? 0 : 1 / aps;
   }, { skill: "A" });
@@ -701,13 +831,15 @@ function basicAttack() {
 
 function useQ() {
   if (!canUse("Q")) return;
+  const dir = direction(); // 시전 시작 시점 방향으로 고정
+  state.facing = dir.angle;
   beginCast(getSkillName("Q"), isOvercharged() ? CAST.Q_OVER : CAST.Q_NORMAL, () => {
-    const dir = direction();
     if (isOvercharged()) {
       if (!consumeBullet(Math.min(2, state.bullets))) return;
       const end = offsetPoint(state.aiden, dir, RANGE.Q_OVER, false);
       const hits = lineHitDummies(state.aiden, end, 34);
-      spawnBullet(state.aiden, end);
+      // 적중 시 탄환은 맞은 대상 지점에서 사라진다(끝까지 날아가지 않음)
+      spawnBullet(state.aiden, hits[0] ? { x: hits[0].x, y: hits[0].y } : end, E_PROJECTILE_SPEED);
       if (hits[0]) {
         damageDummy(hits[0], 17, "전자포");
         setCooldown("Q", 0.5);
@@ -716,35 +848,36 @@ function useQ() {
       }
     } else {
       const end = offsetPoint(state.aiden, dir, RANGE.Q_NORMAL, false);
-      const hits = coneHitDummies(RANGE.Q_NORMAL, 82, dir);
-      spawnSlash(dir.angle);
-      spawnLine(state.aiden, end, "fx-line", 16);
+      const hits = lineHitDummies(state.aiden, end, RANGE.Q_WIDTH / 2);
+      spawnLine(state.aiden, end, "fx-line", RANGE.Q_WIDTH);
       if (hits[0]) {
         damageDummy(hits[0], 13, "뇌격");
         addCharge(2, "Q");
       }
       setCooldown("Q");
     }
-  });
+  }, { skill: "Q" });
 }
 
 function releaseW() {
+  logEvent("▶ 소산 방출 시전", "cast"); // W2는 즉발이라 beginCast를 거치지 않음
   const releasePos = { ...state.aiden };
   const held = clamp(nowSeconds() - state.wStart, 0.15, skillDefs.W.chargeTime);
   const ratio = held / skillDefs.W.chargeTime;
   spawnCircle(releasePos, RANGE.W * 2, "fx-wcircle");
   spawnAfterimage(releasePos);
-  addCharge(1, "W");
 
-  circleHitDummies(releasePos, RANGE.W).forEach((dummy) => {
-    damageDummy(dummy, Math.round(9 + ratio * 13), "Hit");
+  const hits = circleHitDummies(releasePos, RANGE.W);
+  hits.forEach((dummy) => {
+    damageDummy(dummy, Math.round(9 + ratio * 13), "전하 소산");
   });
+  if (hits.length > 0) addCharge(1, "W"); // 적중 시에만 전하 획득
 
   if (ratio >= 0.86) {
     const dir = direction();
     const fieldPoint = offsetPoint(state.aiden, dir, RANGE.W, true);
     circleHitDummies(fieldPoint, 108).forEach((dummy) => {
-      damageDummy(dummy, 12, "Hit");
+      damageDummy(dummy, 12, "전기장");
     });
   }
 
@@ -756,25 +889,25 @@ function releaseW() {
 function useW() {
   if (!canUse("W")) return;
   if (state.recast.W <= 0) {
-    beginCast("전하 소산 충전", CAST.W_START, () => {
+    beginCast("전하 소산", CAST.W_START, () => {
       playVoice("W1");
-      state.recast.W = skillDefs.W.recast;
+      // 충전 0.8초 + 완충 유지 2.5초 = 자동 방출까지의 전체 창
+      state.recast.W = skillDefs.W.chargeTime + W_HOLD_FULL;
       state.wStart = nowSeconds();
       spawnCircle(state.aiden, RANGE.W * 2, "fx-circle");
-      floating("충전", state.aiden, "blue");
-      addCharge(1, "W");
     });
     return;
   }
 
-  beginCast("전하 소산 방출", CAST.W_RELEASE, () => {
-    playVoice("W2");
-    releaseW();
-  });
+  // W2타는 시전시간 없이 즉시 방출
+  playVoice("W2");
+  releaseW();
 }
 
 function useE() {
   if (!canUse("E")) return;
+  const dir = direction(); // 시전 시작 시점 방향으로 고정
+  state.facing = dir.angle;
   if (state.recast.E > 0) {
     const target = markedDummy();
     if (!target) return;
@@ -783,11 +916,14 @@ function useE() {
       return;
     }
     beginCast("볼트 러시", CAST.E2, () => {
-      const dir = direction();
       playVoice("E2");
-      const through = offsetPoint(target, dir, 82, true);
+      // 대상에게 유도로 날아가 적 뒤까지 이동(접근 방향 = 에이든→대상, 그 연장선으로 1.5m 통과)
+      const toTarget = direction(state.aiden, target);
+      const through = offsetPoint(target, toTarget, 1.5 * M, true);
       spawnLine(state.aiden, through, "fx-line", 11);
-      dashTo(through, 0.16);
+      const flyDur = Math.max(0.1, distance(state.aiden, through) / 1560);
+      dashTo(through, flyDur, true, "E2");
+      state.eRelock = flyDur * 0.7;
       damageDummy(target, 16, "볼트 러시");
       addCharge(1, "E");
       state.markedDummyId = null;
@@ -798,17 +934,18 @@ function useE() {
   }
 
   beginCast("백스텝", CAST.E1, () => {
-    const dir = direction();
     playVoice("E1");
     const bulletEnd = offsetPoint(state.aiden, dir, RANGE.E1, false);
-    const backPoint = offsetPoint(state.aiden, { x: -dir.x, y: -dir.y }, 150, true);
-    const hits = lineHitDummies(state.aiden, bulletEnd, 36);
-    spawnBullet(state.aiden, bulletEnd);
+    const backPoint = offsetPoint(state.aiden, { x: -dir.x, y: -dir.y }, 3 * M, true);
+    const hits = lineHitDummies(state.aiden, bulletEnd, 54);
+    // 적중 시 탄환은 맞은 대상 지점에서 사라진다(끝까지 날아가지 않음)
+    spawnBullet(state.aiden, hits[0] ? { x: hits[0].x, y: hits[0].y } : bulletEnd, E_PROJECTILE_SPEED);
     dashTo(backPoint, 0.18);
     if (hits[0]) {
       damageDummy(hits[0], 7, "백스텝");
       state.markedDummyId = hits[0].id;
       state.recast.E = skillDefs.E.recast;
+      state.eDelay = 0.5;
       addCharge(1, "E");
     }
     if (state.charge >= MAX_CHARGE) enterOvercharge("백스텝 과전하");
@@ -818,9 +955,11 @@ function useE() {
 
 function castSecondLightning() {
   if (!state.rTarget) return;
-  spawnCircle(state.rTarget, 160, "fx-lightning");
-  circleHitDummies(state.rTarget, 130).forEach((dummy) => {
-    damageDummy(dummy, 18, "낙뢰 2타");
+  spawnCircle(state.rTarget, RANGE.R * 2, "fx-lightning"); // 둥근 번개 파지직
+  const outer = circleHitDummies(state.rTarget, RANGE.R);
+  const center = circleHitDummies(state.rTarget, RANGE.R_CENTER);
+  outer.forEach((dummy) => {                               // 한번 더 낙뢰
+    damageDummy(dummy, center.includes(dummy) ? 24 : 18, center.includes(dummy) ? "중심 낙뢰 2타" : "낙뢰 2타");
   });
   state.rTarget = null;
   state.rHit = false;
@@ -846,31 +985,35 @@ function useR() {
     return;
   }
 
-  const target = { ...state.cursor };
+  // R 좌표는 시전 즉시(시작 시점) 고정 — 키 누른 순간 커서를 낙하 지점으로(R_CAST 클램프)
+  let target = { ...state.cursor };
+  if (distance(state.aiden, target) > RANGE.R_CAST) {
+    target = offsetPoint(state.aiden, direction(state.aiden, target), RANGE.R_CAST, true);
+  }
   beginCast("낙뢰", CAST.R1, () => {
     playVoice("R");
     state.rTarget = target;
-    spawnRZone(target);
+    spawnCircle(target, RANGE.R * 2, "fx-lightning"); // 둥근 번개
+    spawnRZone(target);                               // 장판 생성
     const outer = circleHitDummies(target, RANGE.R);
-    const center = circleHitDummies(target, 75);
-    spawnCircle(target, RANGE.R * 2, "fx-lightning");
-    outer.forEach((dummy) => {
+    const center = circleHitDummies(target, RANGE.R_CENTER);
+    outer.forEach((dummy) => {                         // 낙뢰 1개
       damageDummy(dummy, center.includes(dummy) ? 18 : 12, center.includes(dummy) ? "중심 낙뢰" : "낙뢰");
     });
     state.rHit = outer.length > 0;
     state.recast.R = skillDefs.R.recast;
-  });
+  }, { skill: "R" });
 }
 
 function useD() {
   if (!canUse("D")) return;
   els.aiden.classList.add("parry");
   setTimeout(() => els.aiden.classList.remove("parry"), 700);
-  const dir = direction();
+  const dir = direction(); // 시전 시작 시점 방향으로 고정
+  state.facing = dir.angle;
   beginCast("빗겨 흘리기", CAST.D, () => {
-    const aimDir = direction();
-    const end = offsetPoint(state.aiden, aimDir, RANGE.D_DASH, true);
-    spawnParry(aimDir);
+    const end = offsetPoint(state.aiden, dir, RANGE.D_DASH, true);
+    spawnParry(dir);
     spawnLine(state.aiden, end, "fx-line", 11);
     dashTo(end, 0.14);
     lineHitDummies(state.aiden, end, 48).forEach((dummy) => {
@@ -884,8 +1027,9 @@ function useD() {
 
 function useF() {
   if (!canUse("F")) return;
+  const dir = direction(); // 시전 시작 시점 방향으로 고정
+  state.facing = dir.angle;
   beginCast("전술 스킬", CAST.F, () => {
-    const dir = direction();
     const point = offsetPoint(state.aiden, dir, 225, true);
     spawnLine(state.aiden, point, "fx-line", 6);
     dashTo(point, 0.11);
@@ -905,6 +1049,46 @@ function useSkill(key) {
   render();
 }
 
+// 입력을 즉시 실행하거나, 차단 캐스트 중이면 짧게 버퍼에 보관(후딜 입력 살리기)
+function cancelCasts() {
+  state.casts = state.casts.filter((cast) => !cast.blocking);
+}
+
+function requestSkill(key) {
+  if (canUse(key)) {
+    useSkill(key);
+  } else {
+    state.buffer = { type: "skill", key, time: nowSeconds() };
+  }
+}
+
+function requestMove(point) {
+  if (CFG.movement.stopOnSkillCast && hasBlockingCast()) {
+    state.buffer = { type: "move", point: { ...point }, time: nowSeconds() };
+  } else {
+    moveTo(point);
+  }
+}
+
+function flushBuffer() {
+  const b = state.buffer;
+  if (!b) return;
+  const maxAge = b.type === "skill" ? CFG.input.skillBufferTime : CFG.input.movementBufferTime;
+  if (nowSeconds() - b.time > maxAge) {
+    state.buffer = null;
+    return;
+  }
+  if (b.type === "skill") {
+    if (canUse(b.key)) {
+      state.buffer = null;
+      useSkill(b.key);
+    }
+  } else if (!(CFG.movement.stopOnSkillCast && hasBlockingCast())) {
+    state.buffer = null;
+    moveTo(b.point);
+  }
+}
+
 function updateCast(delta) {
   if (!state.casts.length) return;
   state.casts.forEach((cast) => { cast.remaining -= delta; });
@@ -914,11 +1098,30 @@ function updateCast(delta) {
   completed.forEach((cast) => cast.onComplete());
 }
 
+// 사거리 밖 더미를 우클릭하면 사거리에 들어올 때까지 추격 후 평타
+function updateAttackMove() {
+  if (state.attackMove == null) return;
+  const dummy = state.dummies.find((d) => d.id === state.attackMove);
+  if (!dummy) { state.attackMove = null; return; }
+  const range = isOvercharged() ? RANGE.ATTACK_OVER : RANGE.ATTACK_MELEE;
+  if (distance(state.aiden, dummy) <= range) {
+    state.moveTarget = null; // 사거리 진입 → 정지
+    if (canUse("A")) {
+      basicAttack();
+      state.attackMove = null;
+    }
+    // 평타 쿨/시전 중이면 사거리 안에서 대기(다음 프레임 재시도)
+  } else {
+    state.moveTarget = clampPoint({ x: dummy.x, y: dummy.y }, 6); // 움직이는 더미도 추적
+    state.facing = direction(state.aiden, dummy).angle;
+  }
+}
+
 function updateMovement(delta) {
   if (state.dash) {
     state.dash.elapsed += delta;
     const t = clamp(state.dash.elapsed / state.dash.duration, 0, 1);
-    const eased = 1 - Math.pow(1 - t, 3);
+    const eased = state.dash.linear ? t : 1 - Math.pow(1 - t, 3);
     state.aiden.x = state.dash.from.x + (state.dash.to.x - state.dash.from.x) * eased;
     state.aiden.y = state.dash.from.y + (state.dash.to.y - state.dash.from.y) * eased;
     if (Math.random() < 0.34) addTrail(state.aiden);
@@ -926,25 +1129,37 @@ function updateMovement(delta) {
     return;
   }
 
-  if (isCasting("A") || isCasting("D")) return;
+  // 시전 시간 동안에는 이동 불가(어떤 스킬 캐스트든). E 돌진·R2 텔레포트 등 스킬 이동은 위의 state.dash가 먼저 처리하므로 예외.
+  if (state.casts.length > 0) return;
   if (!state.moveTarget) return;
   const pos = toPx(state.aiden);
   const target = toPx(state.moveTarget);
   const dx = target.x - pos.x;
   const dy = target.y - pos.y;
   const len = Math.hypot(dx, dy);
-  if (len < 4) {
+  if (len < CFG.movement.arrivalRadius) {
     state.moveTarget = null;
     return;
   }
-  const slowed = state.recast.W > 0 && state.wStart > 0 ? 0.2 : 1;
-  const hasted = state.hasteTime > 0 ? 1.13 : 1;
-  const speed = 305 * slowed * hasted;
+  const slowed = state.recast.W > 0 && state.wStart > 0 ? 0.8 : 1; // W 차징 중 이속 20% 감소
+  const hasted = state.hasteTime > 0 ? 1.13 : 1;                    // 패시브(P) 종료 가속 13% 증가
+  const speed = moveSpeedMps() * M * slowed * hasted;
   const step = Math.min(len, speed * delta);
   state.aiden = clampPoint(fromPx({ x: pos.x + dx / len * step, y: pos.y + dy / len * step }), 6);
 }
 
+const DUMMY_REGEN = 12; // 체력 자연 회복 속도(초당)
+
 function updateDummies(delta) {
+  // 피격 후 잠깐 뒤부터 체력이 시간에 따라 자연 회복(최대 100)
+  state.dummies.forEach((dummy) => {
+    if (dummy.regenDelay > 0) {
+      dummy.regenDelay = Math.max(0, dummy.regenDelay - delta);
+    } else if (dummy.hp < 100) {
+      dummy.hp = clamp(dummy.hp + DUMMY_REGEN * delta, 1, 100);
+    }
+  });
+
   if (!els.dummyMoveMode.checked) return;
   state.dummies.forEach((dummy) => {
     const px = toPx(dummy);
@@ -965,9 +1180,11 @@ function updateTimers(delta) {
   Object.keys(state.recast).forEach((key) => {
     state.recast[key] = Math.max(0, state.recast[key] - delta);
   });
+  state.eDelay = Math.max(0, state.eDelay - delta);
+  state.eRelock = Math.max(0, state.eRelock - delta);
 
   if (state.recast.W <= 0 && state.wStart > 0 && !hasBlockingCast()) {
-    beginCast("전하 소산 방출", CAST.W_RELEASE, () => releaseW());
+    releaseW(); // 완충 유지 시간이 끝나면 시전시간 없이 자동 방출
   }
 
   if (state.recast.E <= 0 && state.markedDummyId) {
@@ -1006,11 +1223,18 @@ function positionLine(el, start, dir, range, height = 16) {
 }
 
 function renderRanges() {
-  [els.wRange, els.e2Range, els.rRange, els.qRange, els.eRange, els.aRange].forEach((el) => el.classList.remove("show"));
+  [els.wRange, els.e2Range, els.rRange, els.rCastRange, els.overchargeRange, els.qRange, els.eRange, els.aRange].forEach((el) => el.classList.remove("show"));
   const dir = direction();
-  const preview = els.rangePreview.checked ? state.previewSkill : "";
+  // 사거리 표시 상태에서 스킬 키를 누르는 동안(pendingSkill)에만 해당 스킬 사거리를 표시
+  const preview = (els.rangePreview.checked && state.pendingSkill) ? state.pendingSkill : "";
 
-  if (preview === "A") {
+  // 폼 전환 대기(전하 만충·미전환) 중에는 "주변 적 없음" 범위를 파란 원으로 표시. 과전하 진입 시 자동으로 사라짐.
+  if (state.charge >= MAX_CHARGE && !isOvercharged()) {
+    positionCircle(els.overchargeRange, state.aiden, RANGE.OVERCHARGE);
+    els.overchargeRange.classList.add("show");
+  }
+
+  if (state.showAttackRange) {
     positionCircle(els.aRange, state.aiden, isOvercharged() ? RANGE.ATTACK_OVER : RANGE.ATTACK_MELEE);
     els.aRange.classList.add("show");
   }
@@ -1022,7 +1246,7 @@ function renderRanges() {
 
   const marked = markedDummy();
   if (marked) {
-    positionCircle(els.e2Range, marked, RANGE.E2);
+    positionCircle(els.e2Range, state.aiden, RANGE.E2);
     els.e2Range.classList.add("show");
   }
 
@@ -1040,7 +1264,13 @@ function renderRanges() {
     positionCircle(els.rRange, state.rTarget, RANGE.R);
     els.rRange.classList.add("show");
   } else if (preview === "R") {
-    positionCircle(els.rRange, state.cursor, RANGE.R);
+    // R 사용 가능 사거리(에이든 기준 R_CAST 원)와, 그 안으로 클램프된 낙뢰 예상 범위를 함께 표시.
+    positionCircle(els.rCastRange, state.aiden, RANGE.R_CAST);
+    els.rCastRange.classList.add("show");
+    const rp = distance(state.aiden, state.cursor) > RANGE.R_CAST
+      ? offsetPoint(state.aiden, direction(state.aiden, state.cursor), RANGE.R_CAST, true)
+      : state.cursor;
+    positionCircle(els.rRange, rp, RANGE.R);
     els.rRange.classList.add("show");
   }
 }
@@ -1065,6 +1295,8 @@ function renderUnits() {
   const cp = toPx(state.cursor);
   els.cursorRing.style.left = `${cp.x}px`;
   els.cursorRing.style.top = `${cp.y}px`;
+  const aimAttack = state.shiftHeld || state.dummies.some((d) => distance(state.cursor, d) <= CFG.input.targetClickRadius);
+  els.cursorRing.classList.toggle("attack", aimAttack);
   els.aimLine.style.left = `${ap.x}px`;
   els.aimLine.style.top = `${ap.y}px`;
   els.aimLine.style.transform = `rotate(${direction().angle}deg)`;
@@ -1117,10 +1349,18 @@ function renderCast() {
     return;
   }
   if (isWCharging()) {
-    const ratio = clamp((nowSeconds() - state.wStart) / skillDefs.W.chargeTime, 0, 1);
+    const elapsed = nowSeconds() - state.wStart;
+    const chargeT = skillDefs.W.chargeTime;
     els.castPanel.classList.add("show");
-    els.castName.textContent = `전하 소산 충전 ${Math.round(ratio * 100)}%`;
-    els.castFill.style.width = `${ratio * 100}%`;
+    if (elapsed < chargeT) {
+      // 충전 중: 0.8초 동안 완충, 남은 충전 시간(초) 표시
+      els.castName.textContent = `전하 소산 ${(chargeT - elapsed).toFixed(1)}초`;
+      els.castFill.style.width = `${clamp(elapsed / chargeT, 0, 1) * 100}%`;
+    } else {
+      // 완충: 바 가득 찬 채로 자동 방출까지 남은 시간(초) 카운트다운
+      els.castName.textContent = `전하 소산 (방출 ${Math.max(0, state.recast.W).toFixed(1)}초)`;
+      els.castFill.style.width = "100%";
+    }
     return;
   }
   els.castPanel.classList.remove("show");
@@ -1166,16 +1406,42 @@ function render() {
   renderSkills();
 }
 
+function charStateLabel() {
+  if (hasBlockingCast()) return "casting";
+  if (isWCharging()) return "charging";
+  if (state.dash) return "dashing";
+  if (state.moveTarget) return "moving";
+  return "idle";
+}
+
+function renderDebug() {
+  const d = CFG.debug;
+  if (!(d.showStateText || d.showMouseWorldPosition || d.showDestination || d.showFacingDirection)) {
+    els.debug.style.display = "none";
+    return;
+  }
+  const lines = [];
+  if (d.showStateText) lines.push(`state : ${charStateLabel()}`);
+  if (d.showMouseWorldPosition) lines.push(`mouse : ${state.cursor.x.toFixed(1)}, ${state.cursor.y.toFixed(1)}`);
+  if (d.showDestination) lines.push(`dest  : ${state.moveTarget ? `${state.moveTarget.x.toFixed(1)}, ${state.moveTarget.y.toFixed(1)}` : "-"}`);
+  if (d.showFacingDirection) lines.push(`facing: ${Math.round(state.facing)}deg`);
+  els.debug.style.display = "block";
+  els.debug.textContent = lines.join("\n");
+}
+
 function tick(time) {
   const delta = Math.min(0.05, (time - state.lastTick) / 1000);
   state.lastTick = time;
   updateCast(delta);
   updateTimers(delta);
+  flushBuffer(delta);
+  updateAttackMove();
   updateMovement(delta);
   updateDummies(delta);
   updateCamera(delta);
   applyCamera();
   render();
+  renderDebug();
   requestAnimationFrame(tick);
 }
 
@@ -1205,6 +1471,7 @@ function resetChampion() {
   state.wStart = 0;
   state.markedDummyId = null;
   state.casts = [];
+  state.buffer = null;
   state.rTarget = null;
   state.rHit = false;
   render();
@@ -1224,6 +1491,7 @@ function reset() {
   state.moveTarget = null;
   state.dash = null;
   state.casts = [];
+  state.buffer = null;
   state.rTarget = null;
   state.rHit = false;
   state.cam = { x: 38, y: 56 };
@@ -1239,6 +1507,7 @@ function reset() {
 
 els.field.addEventListener("pointermove", (event) => {
   state.cursor = pointFromEvent(event);
+  state.shiftHeld = event.shiftKey;
   const rect = fieldRect();
   state.pointer = { x: event.clientX - rect.left, y: event.clientY - rect.top };
 });
@@ -1260,9 +1529,30 @@ els.field.addEventListener("pointerdown", (event) => {
   }
   if (event.button !== 2) return;
   event.preventDefault();
-  const onDummy = state.dummies.some((dummy) => distance(state.cursor, dummy) <= 36);
-  if (onDummy) basicAttack();
-  else moveTo(state.cursor);
+  // 인디케이터 캐스트: 조준 중인 스킬을 우클릭으로 시전(취소는 Esc)
+  if (state.pendingSkill) {
+    const key = state.pendingSkill;
+    state.pendingSkill = null;
+    requestSkill(key);
+    return;
+  }
+  // 시전 중 이동/공격 명령으로 시전이 끊기지 않도록 cancelCasts는 호출하지 않는다(시전은 끝까지 진행).
+  const range = isOvercharged() ? RANGE.ATTACK_OVER : RANGE.ATTACK_MELEE;
+  const clickedDummy = state.dummies
+    .filter((dummy) => distance(state.cursor, dummy) <= CFG.input.targetClickRadius)
+    .sort((a, b) => distance(state.cursor, a) - distance(state.cursor, b))[0];
+  if (clickedDummy) {
+    if (distance(state.aiden, clickedDummy) <= range) {
+      state.attackMove = null;
+      basicAttack();
+    } else {
+      // 사거리 밖 더미 클릭 → 사거리에 들어올 때까지 추격 후 평타
+      state.attackMove = clickedDummy.id;
+      state.showAttackRange = false;
+    }
+  } else {
+    requestMove(state.cursor); // 빈 곳 클릭 → 이동(추격 취소)
+  }
 });
 
 els.field.addEventListener("contextmenu", (event) => {
@@ -1270,6 +1560,7 @@ els.field.addEventListener("contextmenu", (event) => {
 });
 
 window.addEventListener("keydown", (event) => {
+  state.shiftHeld = event.shiftKey;
   if (state.rebinding) {
     event.preventDefault();
     if (event.code !== "Escape") state.keybinds[state.rebinding] = event.code;
@@ -1282,14 +1573,48 @@ window.addEventListener("keydown", (event) => {
     state.spaceHeld = true;
     return;
   }
+  if (event.code === "Escape" && state.pendingSkill) {
+    event.preventDefault();
+    state.pendingSkill = null;
+    render();
+    return;
+  }
   const action = Object.keys(state.keybinds).find((a) => state.keybinds[a] === event.code);
   if (!action) return;
   event.preventDefault();
-  useSkill(action);
+  // A 키: 평타 사거리 표시. 키를 떼도 유지되고, 이동 명령 시 해제(`moveTo`).
+  if (action === "A") {
+    if (!event.repeat) {
+      state.showAttackRange = true;
+      render();
+    }
+    return;
+  }
+  // 사거리 표시 상태: 키를 누르는 동안만 사거리 표시(조준). 우클릭 또는 키 떼기로 시전. W는 제외(즉시 시전).
+  if (els.rangePreview.checked && action !== "W") {
+    if (!event.repeat) {
+      state.pendingSkill = action;
+      state.previewSkill = action;
+      render();
+    }
+    return;
+  }
+  state.pendingSkill = null;
+  requestSkill(action);
 });
 
 window.addEventListener("keyup", (event) => {
-  if (event.code === "Space") state.spaceHeld = false;
+  state.shiftHeld = event.shiftKey;
+  if (event.code === "Space") { state.spaceHeld = false; return; }
+  // 사거리 표시 상태: 조준 중인 스킬의 키를 떼면 현재 커서 기준으로 시전
+  if (state.pendingSkill) {
+    const action = Object.keys(state.keybinds).find((a) => state.keybinds[a] === event.code);
+    if (action && action === state.pendingSkill) {
+      const key = state.pendingSkill;
+      state.pendingSkill = null;
+      requestSkill(key);
+    }
+  }
 });
 
 els.skillSlots.forEach((button) => {
@@ -1335,5 +1660,6 @@ els.cooldownResetMode.addEventListener("change", () => {
 });
 
 renderKeybinds();
+loadControlConfig();
 reset();
 requestAnimationFrame(tick);

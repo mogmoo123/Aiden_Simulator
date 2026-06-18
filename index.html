@@ -18,6 +18,8 @@
             <div class="range-circle" id="wRange"></div>
             <div class="range-circle e2-range" id="e2Range"></div>
             <div class="range-circle target-range" id="rRange"></div>
+            <div class="range-circle r-cast-range" id="rCastRange"></div>
+            <div class="range-circle overcharge-range" id="overchargeRange"></div>
             <div class="range-line" id="qRange"></div>
             <div class="range-line" id="eRange"></div>
             <div class="range-circle attack-range" id="aRange"></div>
@@ -95,6 +97,10 @@
               <label for="camSens">카메라 감도</label>
               <input type="number" id="camSens" value="20" min="1" max="200" step="5" />
             </div>
+            <div class="setting-row">
+              <label for="moveSpeed">이동 속도 (m/s)</label>
+              <input type="number" id="moveSpeed" value="4.08" min="0.5" max="20" step="0.05" />
+            </div>
             <div class="keybind-row">
               <span class="keybind-label">조작키 (클릭 후 키 입력)</span>
               <div class="keybinds" id="keybinds"></div>
@@ -126,6 +132,10 @@
             <span class="passive-dur" id="passiveDur"></span>
           </div>
         </footer>
+
+        <div class="debug-overlay" id="debug"></div>
+
+        <div class="skill-log" id="skillLog" aria-live="polite"></div>
 
         <p class="credit">본 웹사이트는 (주)님블뉴런의 "이터널리턴"을 바탕으로 제작된 2차 창작 사이트입니다.</p>
       </section>

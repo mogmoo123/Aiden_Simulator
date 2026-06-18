@@ -120,8 +120,13 @@ button {
 .cursor-ring {
   width: 48px;
   height: 48px;
-  border: 1px solid rgba(85, 214, 255, 0.42);
-  box-shadow: 0 0 20px rgba(85, 214, 255, 0.14);
+  border: 2px solid rgba(85, 214, 255, 0.6);
+  box-shadow: 0 0 20px rgba(85, 214, 255, 0.18);
+}
+
+.cursor-ring.attack {
+  border-color: rgba(255, 90, 90, 0.85);
+  box-shadow: 0 0 22px rgba(255, 70, 70, 0.32);
 }
 
 .move-point {
@@ -197,6 +202,22 @@ button {
   box-shadow: inset 0 0 22px rgba(255, 255, 255, 0.1);
 }
 
+/* R 사용 가능 사거리 — 에이든 기준 외곽 경계(점선) */
+.range-circle.r-cast-range {
+  border-color: rgba(120, 200, 255, 0.55);
+  border-style: dashed;
+  background: radial-gradient(circle, transparent 60%, rgba(85, 180, 255, 0.06) 100%);
+  box-shadow: inset 0 0 26px rgba(85, 180, 255, 0.08);
+}
+
+/* 근→원거리 폼 전환 대기 — "주변 적 없음" 범위(파란 원) */
+.range-circle.overcharge-range {
+  border-color: rgba(70, 150, 255, 0.85);
+  border-width: 2px;
+  background: radial-gradient(circle, rgba(70, 150, 255, 0.16), rgba(70, 150, 255, 0.06) 55%, transparent 72%);
+  box-shadow: inset 0 0 30px rgba(70, 150, 255, 0.22), 0 0 22px rgba(70, 150, 255, 0.25);
+}
+
 .unit {
   position: absolute;
   left: 50%;
@@ -248,8 +269,8 @@ button {
   position: absolute;
   left: 50%;
   top: 50%;
-  width: 76px;
-  height: 76px;
+  width: 60.8px;
+  height: 60.8px;
   transform: translate(-50%, -50%);
   object-fit: contain;
 }
@@ -592,6 +613,63 @@ button {
   border-color: rgba(85, 214, 255, 0.72);
 }
 
+.debug-overlay {
+  position: fixed;
+  left: 10px;
+  top: 10px;
+  z-index: 999;
+  display: none;
+  padding: 6px 9px;
+  background: rgba(0, 0, 0, 0.55);
+  border: 1px solid rgba(116, 135, 153, 0.35);
+  color: #b9f0ff;
+  font-family: "Consolas", "Courier New", monospace;
+  font-size: 11px;
+  line-height: 1.5;
+  white-space: pre;
+  pointer-events: none;
+}
+
+.skill-log {
+  position: fixed;
+  left: 12px;
+  bottom: 12px;
+  z-index: 998;
+  display: flex;
+  flex-direction: column;
+  gap: 3px;
+  max-width: 260px;
+  pointer-events: none;
+}
+
+.skill-log .log-line {
+  padding: 2px 9px;
+  background: rgba(8, 16, 28, 0.6);
+  border-left: 2px solid rgba(116, 135, 153, 0.6);
+  border-radius: 0 4px 4px 0;
+  color: rgba(220, 240, 255, 0.92);
+  font-family: "Consolas", "Courier New", monospace;
+  font-size: 12px;
+  line-height: 1.45;
+  white-space: nowrap;
+  animation: logFade 0.22s ease-out;
+}
+
+.skill-log .log-line.cast {
+  border-left-color: rgba(85, 214, 255, 0.85);
+  color: #cdeeff;
+}
+
+.skill-log .log-line.hit {
+  border-left-color: rgba(120, 255, 175, 0.85);
+  color: #d6ffe6;
+}
+
+@keyframes logFade {
+  from { opacity: 0; transform: translateX(-8px); }
+  to { opacity: 1; transform: none; }
+}
+
 .credit {
   position: fixed;
   right: 12px;
@@ -799,6 +877,8 @@ button {
 .fx-line {
   height: 10px;
   border-radius: 999px;
+  /* 시작점(에이든 몸)을 기준으로 회전·연장되도록 좌측 중앙을 회전 원점으로 */
+  transform-origin: left center;
   background: linear-gradient(90deg, transparent, rgba(235, 252, 255, 0.95) 24%, rgba(85, 214, 255, 0.9) 70%, transparent);
   box-shadow: 0 0 18px rgba(85, 214, 255, 0.8);
   animation: lineFade 0.35s ease-out forwards;
