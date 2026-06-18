@@ -509,13 +509,16 @@ function shake() {
   els.stage.classList.add("shake");
 }
 
+// 백스텝(E) 초기화: 쿨 0 + (볼트 러시 중이면) E2 사용 후에도 쿨이 다시 걸리지 않도록 플래그.
+function resetBackstep() {
+  state.cooldowns.E = 0;
+  state.eRelock = 0;
+  if (state.recast.E > 0) state.eFreeBackstep = true;
+}
+
 function resetECooldownOnFullCharge(before) {
   if (before < MAX_CHARGE && state.charge >= MAX_CHARGE) {
-    // 풀차지 도달 시 백스텝(E) 쿨다운 초기화. 볼트 러시(재시전) 중이면 그 상태를 유지하되,
-    // 'E2 사용 후에도 백스텝 쿨 없음'을 보장하기 위해 플래그를 세운다(E2가 쿨을 다시 걸지 않도록).
-    state.cooldowns.E = 0;
-    state.eRelock = 0;
-    if (state.recast.E > 0) state.eFreeBackstep = true;
+    resetBackstep();
     floating("백스텝 초기화", state.aiden, "blue");
   }
 }
@@ -529,16 +532,18 @@ function addCharge(amount, reason = "") {
   resetECooldownOnFullCharge(before);
 }
 
-function enterOvercharge(reason = "") {
-  if (isOvercharged() || state.charge < MAX_CHARGE) return;
+// force=true면 이미 과전하 상태여도 재돌입(탄환·지속시간 재충전). R2 적중 시 사용.
+function enterOvercharge(reason = "", force = false) {
+  if (!force && (isOvercharged() || state.charge < MAX_CHARGE)) return;
   state.mode = "overcharged";
-  state.bullets = MAX_CHARGE;
-  state.overTime = OVERCHARGE_TIME;
+  state.bullets = MAX_CHARGE;       // 탄환 충전(재돌입 시 재충전)
+  state.overTime = OVERCHARGE_TIME; // 지속시간 갱신
   state.hasteTime = 0;
   // 충전 중이던 W가 과전하로 취소될 때 쿨다운을 적용(쿨 초기화/무료 W 버그 방지)
   if (state.wStart > 0 && cooldownOf("W") <= 0) setCooldown("W");
   state.recast.W = 0;
   state.wStart = 0;
+  resetBackstep();                  // 과전하 진입 시 백스텝(E) 초기화
   floating(reason || "과전하", state.aiden, "gold");
   playVoice("passive");
   spawnCircle(state.aiden, 170, "fx-circle");
@@ -1020,7 +1025,7 @@ function useE() {
 }
 
 function castSecondLightning() {
-  if (!state.rTarget) return;
+  if (!state.rTarget) return false;
   spawnCircle(state.rTarget, RANGE.R * 2, "fx-lightning"); // 둥근 번개 파지직
   const outer = circleHitDummies(state.rTarget, RANGE.R);
   const center = circleHitDummies(state.rTarget, RANGE.R_CENTER);
@@ -1031,6 +1036,7 @@ function castSecondLightning() {
   state.rHit = false;
   state.recast.R = 0;
   setCooldown("R");
+  return outer.length > 0; // R2 낙뢰가 적에게 맞았는지
 }
 
 function useR() {
@@ -1040,13 +1046,13 @@ function useR() {
     playVoice("R");
     spawnLine(state.aiden, state.rTarget, "fx-line", 9);
     dashTo(state.rTarget, 0.05);
-    if (state.rHit) {
-      const before = state.charge;
+    // R2 낙뢰가 적에게 맞으면 과전하 즉시 (재)돌입. 이미 과전하여도 force로 재돌입해
+    // 탄환·지속시간이 다시 초기화되고, 과전하 진입의 부수효과로 백스텝(E)도 초기화된다.
+    const r2Hit = castSecondLightning();
+    if (r2Hit) {
       state.charge = MAX_CHARGE;
-      resetECooldownOnFullCharge(before);
-      floating("전하 최대", state.aiden, "gold");
+      enterOvercharge("낙뢰 과전하", true);
     }
-    castSecondLightning();
     return;
   }
 

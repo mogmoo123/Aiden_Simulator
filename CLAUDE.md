@@ -81,7 +81,7 @@ python -m http.server 8000   # 그 후 http://localhost:8000 접속
 `state.recast = {W,E,R}` 타이머가 0보다 크면 두 번째 시전이 가능하다. 각기 다른 패턴:
 - **W**: 1차 짧은 윈드업(`CAST.W_START`) 후 충전 시작 — `recast.W = chargeTime(0.8s) + W_HOLD_FULL(2.5s) = 3.3s`. **0.8초간 완충**(`ratio = 경과/chargeTime`)되고, 완충 후 **바가 가득 찬 채 2.5초 유지**되다가 타이머 만료(`recast.W<=0`) 시 `updateTimers`가 **시전시간 없이 즉시 자동 방출**(`releaseW`). 충전 중 W를 다시 누르면 즉시 방출(이른 방출은 `ratio`만큼 약함). 시전 바는 충전 중 "전하 소산 X.X초"(남은 충전), 완충 후 "전하 소산 (방출 X.X초)"(자동 방출 카운트다운)로 **초 단위** 표시(`renderCast`의 `isWCharging` 분기). 방출 데미지/속박은 `ratio`로 결정.
 - **E**: 1차 백스텝(`CAST.E1` 윈드업, 사용 후 +20% 이속 2초) 적중 시 대상에 "표식"(`markedDummyId`) → 2차 "볼트 러시"는 **시전시간 없이 즉시** 표식 대상에게 **유도로 날아가 적 뒤 1.5m까지 통과**. 표식 사라지면 쿨 적용. E2 준비 창은 `recast.E`(3.6초)로 과전하 중에도 정상 진행되어 만료될 수 있다(`recast.E<=0` 시 표식 해제 + `setCooldown("E")`). 더미는 죽지 않으므로(체력 최소 1) **표식이 더미 사망으로 끊기지 않는다** — 오직 타이머 만료/E2 사용으로만 해제.
-- **R**: 1차 낙뢰는 **시전 시작(키 누른) 시점 커서**에 지정(`rTarget`, `R_CAST` 클램프) → 2차는 **시전시간 없이 즉시** 그 위치로 순간이동(텔레포트 `dashTo` 0.05초). 미사용 시 `updateTimers`가 자동 2타(`castSecondLightning`). **R 위빙 콤보**: R2 직전에 Q/E/W를 섞으면, 그 스킬이 큐에 남아 R2 텔레포트 후 **이동한 위치에서** 발동(RQR/RER/RWR).
+- **R**: 1차 낙뢰는 **시전 시작(키 누른) 시점 커서**에 지정(`rTarget`, `R_CAST` 클램프) → 2차는 **시전시간 없이 즉시** 그 위치로 순간이동(텔레포트 `dashTo` 0.05초). **R2를 시전해 낙뢰가 적에게 맞으면 과전하 즉시 (재)돌입**(`castSecondLightning()`이 적중 여부 반환 → 적중 시 `enterOvercharge("낙뢰 과전하", true)`) — 이미 과전하여도 `force`로 재돌입해 탄환·지속시간이 재충전되고, 과전하 진입의 부수효과로 백스텝(E)이 초기화된다(`enterOvercharge` 내부 `resetBackstep()`). 미사용 시 `updateTimers`가 자동 2타(`castSecondLightning`). **R 위빙 콤보**: R2 직전에 Q/E/W를 섞으면, 그 스킬이 큐에 남아 R2 텔레포트 후 **이동한 위치에서** 발동(RQR/RER/RWR).
 
 자동 만료/방출 로직이 `updateTimers`에 모여 있으므로, recast 동작을 바꿀 땐 `use*` 함수와 `updateTimers` 양쪽을 함께 봐야 한다.
 
