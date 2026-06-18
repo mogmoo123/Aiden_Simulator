@@ -132,6 +132,7 @@ const state = {
   pendingSkill: null,
   showAttackRange: false,
   attackMove: null,
+  aHeld: false,
   debugMode: false,
   nextDummyId: 2,
   dummies: [
@@ -1627,6 +1628,15 @@ els.field.addEventListener("pointerdown", (event) => {
     basicAttack();
     return;
   }
+  // A키를 누른 채 좌클릭: 내 캐릭터에서 가장 가까운 적을 공격(사거리 밖이면 추격 후 평타)
+  if (event.button === 0 && state.aHeld) {
+    event.preventDefault();
+    const nearest = state.dummies
+      .slice()
+      .sort((a, b) => distance(state.aiden, a) - distance(state.aiden, b))[0];
+    if (nearest) state.attackMove = nearest.id; // updateAttackMove가 사거리 진입 시 평타
+    return;
+  }
   if (event.button !== 2) return;
   event.preventDefault();
   // 인디케이터 캐스트: 조준 중인 스킬을 우클릭으로 시전(취소는 Esc)
@@ -1690,8 +1700,9 @@ window.addEventListener("keydown", (event) => {
     render();
     return;
   }
-  // A 키: 평타 사거리 표시. 키를 떼도 유지되고, 이동 명령 시 해제(`moveTo`).
+  // A 키: 평타 사거리 표시. 키를 떼도 유지되고, 이동 명령 시 해제(`moveTo`). 누르고 있는 동안 좌클릭=공격 명령(aHeld).
   if (action === "A") {
+    state.aHeld = true;
     if (!event.repeat) {
       state.showAttackRange = true;
       render();
@@ -1714,10 +1725,11 @@ window.addEventListener("keydown", (event) => {
 window.addEventListener("keyup", (event) => {
   state.shiftHeld = event.shiftKey;
   if (event.code === "Space") { state.spaceHeld = false; return; }
+  const upAction = Object.keys(state.keybinds).find((a) => state.keybinds[a] === event.code);
+  if (upAction === "A") state.aHeld = false; // A 키를 떼면 좌클릭 공격 명령 해제
   // 사거리 표시 상태: 조준 중인 스킬의 키를 떼면 현재 커서 기준으로 시전
   if (state.pendingSkill) {
-    const action = Object.keys(state.keybinds).find((a) => state.keybinds[a] === event.code);
-    if (action && action === state.pendingSkill) {
+    if (upAction && upAction === state.pendingSkill) {
       const key = state.pendingSkill;
       state.pendingSkill = null;
       requestSkill(key);
