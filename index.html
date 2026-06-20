@@ -75,7 +75,11 @@
             </label>
             <label class="toggle">
               <input type="checkbox" id="cooldownResetMode" />
-              <span>쿨타임 초기화 모드</span>
+              <span id="cooldownResetLabel">쿨타임 초기화</span>
+            </label>
+            <label class="toggle">
+              <input type="checkbox" id="autoAttackAfterSkill" />
+              <span>스킬 후 자동 공격</span>
             </label>
             <label class="toggle">
               <input type="checkbox" id="dummyMoveMode" />
@@ -98,18 +102,29 @@
               <input type="number" id="camSens" value="20" min="1" max="200" step="5" />
             </div>
             <div class="keybind-row">
-              <span class="keybind-label">조작키 (클릭 후 키 입력)</span>
-              <div class="keybinds" id="keybinds"></div>
+              <button class="keybind-open" id="openKeybindsBtn" type="button">조작키 변경</button>
             </div>
             <div class="button-grid">
               <button id="healBtn" type="button">전체 회복</button>
               <button id="addDummyBtn" type="button">더미 추가</button>
               <button id="champResetBtn" type="button">실험체 초기화</button>
               <button id="fullChargeBtn" type="button">전하 충전</button>
-              <button id="clearCooldownBtn" type="button">쿨타임 초기화</button>
             </div>
           </div>
         </aside>
+
+        <dialog class="keybind-modal" id="keybindModal" aria-labelledby="keybindModalTitle">
+          <div class="keybind-modal-head">
+            <h2 id="keybindModalTitle">조작키 변경</h2>
+            <button class="keybind-modal-close" id="keybindModalClose" type="button" aria-label="닫기" title="닫기">×</button>
+          </div>
+          <div class="keybinds" id="keybinds"></div>
+        </dialog>
+
+        <div class="cast-panel w-cast-panel" id="wCastPanel" aria-live="polite">
+          <div class="cast-name" id="wCastName"></div>
+          <div class="cast-bar"><span id="wCastFill"></span></div>
+        </div>
 
         <div class="cast-panel" id="castPanel" aria-live="polite">
           <div class="cast-name" id="castName"></div>
