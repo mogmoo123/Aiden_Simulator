@@ -126,6 +126,7 @@ const state = {
   casts: [],
   rTarget: null,
   rHit: false,
+  pendingE1Release: null,
   wVoiceIndex: null,
   rVoiceIndex: null,
   nextBasicAttackAt: 0,
@@ -138,7 +139,8 @@ const state = {
   rebinding: null,
   keybinds: {
     Q: "KeyQ", W: "KeyW", E: "KeyE", R: "KeyR", D: "KeyD", F: "KeyF",
-    A: "KeyA", S: "KeyS", COOLDOWN_RESET: "KeyC", FULLSCREEN: "F11", EXIT_FULLSCREEN: "Escape"
+    A: "KeyA", S: "KeyS", COOLDOWN_RESET: "KeyC", CAMERA_LOCK: "KeyY",
+    FULLSCREEN: "F11", EXIT_FULLSCREEN: "Escape"
   },
   cursor: { x: 58, y: 50 },
   aiden: { x: 38, y: 56 },
@@ -190,6 +192,7 @@ const els = {
   alexMode: document.getElementById("alexMode"),
   alexLabel: document.getElementById("alexLabel"),
   cameraLock: document.getElementById("cameraLock"),
+  cameraLockLabel: document.getElementById("cameraLockLabel"),
   healBtn: document.getElementById("healBtn"),
   addDummyBtn: document.getElementById("addDummyBtn"),
   champResetBtn: document.getElementById("champResetBtn"),
@@ -853,6 +856,7 @@ function canUse(key) {
   if (isCasting("D") && key !== "D") return false;
   if (isWCharging() && key !== "W" && !(key === "E" && isERecast()) && !(key === "R" && isRRecast())) return false;
   if (key === "E" && isCasting("E")) return false;
+  if (key === "E" && state.pendingE1Release) return false;
   if (key === "R" && isCasting("R")) return false;
   if (key !== "E" && !(key === "R" && isRRecast()) && hasBlockingCast()) return false;
   if (key === "A" && nowSeconds() < state.nextBasicAttackAt) return false;
@@ -1218,9 +1222,9 @@ function useW() {
 
 function useE() {
   if (!canUse("E")) return false;
-  const dir = direction(); // 시전 시작 시점 방향으로 고정
-  state.facing = dir.angle;
   if (state.recast.E > 0) {
+    const dir = direction();
+    state.facing = dir.angle;
     const target = markedDummy();
     if (!target) return false;
     if (distance(state.aiden, target) > RANGE.E2) {
@@ -1252,38 +1256,49 @@ function useE() {
     return true;
   }
 
+  const e1AimTarget = { ...state.cursor };
+  state.facing = direction(state.aiden, e1AimTarget).angle;
   playSkillSound("src/sound/E1.mov");
   beginCast("백스텝", CAST.E1, () => {
-    playVoice("E1");
-    const bulletEnd = offsetPoint(state.aiden, dir, RANGE.E1, false);
-    const backPoint = offsetPoint(state.aiden, { x: -dir.x, y: -dir.y }, 3 * M, true);
-    const hits = lineHitDummies(state.aiden, bulletEnd, RANGE.E_WIDTH / 2); // E1 폭 0.6m(반폭 0.3m)
-    // 탄환은 캐릭터 중앙이 아니라 바라보는 방향으로 0.5m 앞에서 발사
-    const bulletStart = offsetPoint(state.aiden, dir, 0.5 * M, false);
-    // 탄환은 정확히 마우스 방향(dir) 직선으로만 날아간다. 적중 시 더미의 실제 위치가 아니라
-    // 그 직선상의 명중 지점(투영)까지만 날아가 사라진다(유도처럼 휘지 않음).
-    let bulletTarget = bulletEnd;
-    if (hits[0]) {
-      const sPx = toPx(bulletStart);
-      const hPx = toPx(hits[0]);
-      const proj = clamp((hPx.x - sPx.x) * dir.x + (hPx.y - sPx.y) * dir.y, 0, RANGE.E1);
-      bulletTarget = fromPx({ x: sPx.x + dir.x * proj, y: sPx.y + dir.y * proj });
+    const bufferedR2 = isCasting("R") && state.buffer?.type === "skill" && state.buffer.key === "R";
+    if (bufferedR2) {
+      state.pendingE1Release = { aimTarget: e1AimTarget, remaining: 0.5 };
+      return;
     }
-    spawnBullet(bulletStart, bulletTarget, E_PROJECTILE_SPEED);
-    dashTo(backPoint, 0.18);
-    state.e2HasteTime = POST_E2_HASTE_TIME; // 백스텝(E1) 사용 후 2초 이속 +20%
-    if (hits[0]) {
-      damageDummy(hits[0], 7, "백스텝");
-      playSkillSound("src/sound/E_타격.mov");
-      state.markedDummyId = hits[0].id;
-      state.recast.E = skillDefs.E.recast;
-      state.eDelay = 0.5;
-      addCharge(1, "E");
-    }
-    if (state.charge >= MAX_CHARGE) enterOvercharge("백스텝 과전하");
-    if (!hits[0]) setCooldown("E");
+    releaseE1(e1AimTarget);
   }, { blocking: false, skill: "E" });
   return true;
+}
+
+function releaseE1(aimTarget) {
+  playVoice("E1");
+  // E 입력 좌표는 고정하되, R2 이동 뒤의 새 원점에서 그 좌표를 다시 조준한다.
+  const fireDir = direction(state.aiden, aimTarget);
+  state.facing = fireDir.angle;
+  const bulletEnd = offsetPoint(state.aiden, fireDir, RANGE.E1, false);
+  const backPoint = offsetPoint(state.aiden, { x: -fireDir.x, y: -fireDir.y }, 3 * M, true);
+  const hits = lineHitDummies(state.aiden, bulletEnd, RANGE.E_WIDTH / 2); // E1 폭 0.6m(반폭 0.3m)
+  const bulletStart = offsetPoint(state.aiden, fireDir, 0.5 * M, false);
+  let bulletTarget = bulletEnd;
+  if (hits[0]) {
+    const sPx = toPx(bulletStart);
+    const hPx = toPx(hits[0]);
+    const proj = clamp((hPx.x - sPx.x) * fireDir.x + (hPx.y - sPx.y) * fireDir.y, 0, RANGE.E1);
+    bulletTarget = fromPx({ x: sPx.x + fireDir.x * proj, y: sPx.y + fireDir.y * proj });
+  }
+  spawnBullet(bulletStart, bulletTarget, E_PROJECTILE_SPEED);
+  dashTo(backPoint, 0.18);
+  state.e2HasteTime = POST_E2_HASTE_TIME;
+  if (hits[0]) {
+    damageDummy(hits[0], 7, "백스텝");
+    playSkillSound("src/sound/E_타격.mov");
+    state.markedDummyId = hits[0].id;
+    state.recast.E = skillDefs.E.recast;
+    state.eDelay = 0.5;
+    addCharge(1, "E");
+  }
+  if (state.charge >= MAX_CHARGE) enterOvercharge("백스텝 과전하");
+  if (!hits[0]) setCooldown("E");
 }
 
 function castSecondLightning() {
@@ -1309,6 +1324,11 @@ function useR() {
     crossfadeSkillSound("R", "src/sound/R2.mp3", 0.8, R_CROSSFADE_MS);
     spawnLine(state.aiden, state.rTarget, "fx-line", 9);
     teleportTo(state.rTarget);
+    if (state.pendingE1Release) {
+      const pendingE1 = state.pendingE1Release;
+      state.pendingE1Release = null;
+      releaseE1(pendingE1.aimTarget);
+    }
     // R2 낙뢰가 적에게 맞으면 과전하 즉시 (재)돌입. 이미 과전하여도 force로 재돌입해
     // 탄환·지속시간이 다시 초기화되고, 과전하 진입의 부수효과로 백스텝(E)도 초기화된다.
     const r2Hit = castSecondLightning();
@@ -1552,6 +1572,15 @@ function updateTimers(delta) {
   state.eRelock = Math.max(0, state.eRelock - delta);
   state.e2HasteTime = Math.max(0, (state.e2HasteTime || 0) - delta);
 
+  if (state.pendingE1Release) {
+    state.pendingE1Release.remaining -= delta;
+    if (state.pendingE1Release.remaining <= 0) {
+      const pendingE1 = state.pendingE1Release;
+      state.pendingE1Release = null;
+      releaseE1(pendingE1.aimTarget);
+    }
+  }
+
   if (state.recast.W <= 0 && state.wStart > 0 && !hasBlockingCast()) {
     releaseW(); // 완충 유지 시간이 끝나면 시전시간 없이 자동 방출
   }
@@ -1769,6 +1798,12 @@ function renderCooldownResetLabel() {
   els.cooldownResetLabel.textContent = "쿨타임 초기화";
 }
 
+function renderCameraLockLabel() {
+  if (els.cameraLockLabel) {
+    els.cameraLockLabel.textContent = `카메라 잠금 (${keyLabel(state.keybinds.CAMERA_LOCK)})`;
+  }
+}
+
 async function toggleFullscreen() {
   try {
     if (document.fullscreenElement) {
@@ -1806,6 +1841,7 @@ function renderKeybinds() {
     ["Q", "Q"], ["W", "W"], ["E", "E"], ["R", "R"],
     ["D", "D"], ["F", "F"], ["A", "A"], ["S", "S"],
     ["COOLDOWN_RESET", "쿨타임 초기화"],
+    ["CAMERA_LOCK", "화면 잠금"],
     ["FULLSCREEN", "전체화면 전환"], ["EXIT_FULLSCREEN", "전체화면 종료"]
   ];
   els.keybinds.innerHTML = actions.map(([action, label]) => {
@@ -1813,6 +1849,7 @@ function renderKeybinds() {
     return `<button class="keybind ${listening ? "listening" : ""}" data-action="${action}">${label}<b>${listening ? "..." : keyLabel(state.keybinds[action])}</b></button>`;
   }).join("");
   renderCooldownResetLabel();
+  renderCameraLockLabel();
 }
 
 function renderSkills() {
@@ -1939,6 +1976,7 @@ function resetChampion() {
   state.skillAutoAttackActive = false;
   state.rTarget = null;
   state.rHit = false;
+  state.pendingE1Release = null;
   state.wVoiceIndex = null;
   state.rVoiceIndex = null;
   state.nextBasicAttackAt = 0;
@@ -1969,6 +2007,7 @@ function reset() {
   state.skillAutoAttackActive = false;
   state.rTarget = null;
   state.rHit = false;
+  state.pendingE1Release = null;
   state.wVoiceIndex = null;
   state.rVoiceIndex = null;
   state.nextBasicAttackAt = 0;
@@ -2089,6 +2128,15 @@ window.addEventListener("keydown", (event) => {
   if (!action) return;
   event.preventDefault();
   if (action === "EXIT_FULLSCREEN") return;
+  if (action === "CAMERA_LOCK") {
+    if (!event.repeat) {
+      els.cameraLock.checked = !els.cameraLock.checked;
+      els.cameraLock.dispatchEvent(new Event("change"));
+      logEvent(els.cameraLock.checked ? "카메라 잠금" : "카메라 잠금 해제");
+      render();
+    }
+    return;
+  }
   if (action === "S") {
     // S: 진행 중이던 이동 정지(클릭 이동·추격 평타·버퍼된 이동 명령 취소). 돌진 등 스킬 이동은 유지.
     state.moveTarget = null;
