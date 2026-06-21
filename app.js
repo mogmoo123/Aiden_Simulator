@@ -27,7 +27,7 @@ RANGE.Q_NORMAL = 3.6 * M;   // Q1 사거리 3.6m
 RANGE.Q_WIDTH = 0.6 * M;    // Q1 폭 0.6m
 RANGE.Q_OVER = 7.5 * M;     // Q2 사거리 7.5m
 RANGE.W = 3.25 * M;         // W 반경 3.25m
-RANGE.W_RING_INNER = 2.75 * M; // W 전하 소산 링 안쪽 경계
+RANGE.W_RING_INNER = RANGE.W;  // W 기준 원 내부는 풀차징 여부와 무관하게 내부 판정
 RANGE.W_RING_OUTER = 3.75 * M; // W 전하 소산 링 바깥쪽 경계
 RANGE.E_WIDTH = 0.6 * M;    // E1(백스텝 사격) 폭 0.6m
 RANGE.E2 = 11 * M;          // E2 재사용 가능 거리 11m
@@ -748,21 +748,23 @@ function addCharge(amount, reason = "") {
   resetECooldownOnFullCharge(before);
 }
 
-// force=true면 이미 과전하 상태여도 재돌입(탄환·지속시간 재충전). R2 적중 시 사용.
-function enterOvercharge(reason = "", force = false) {
+// force=true면 이미 과전하 상태여도 재돌입. preserveW=true는 R2 적중 중 W 차징을 유지한다.
+function enterOvercharge(reason = "", force = false, { preserveW = false } = {}) {
   if (!force && (isOvercharged() || state.charge < MAX_CHARGE)) return;
   const changedFromMelee = !isOvercharged();
   state.mode = "overcharged";
   state.bullets = MAX_CHARGE;       // 탄환 충전(재돌입 시 재충전)
   state.overTime = OVERCHARGE_TIME; // 지속시간 갱신
   state.hasteTime = 0;
-  // 충전 중이던 W가 과전하로 취소될 때 쿨다운을 적용(쿨 초기화/무료 W 버그 방지)
-  if (state.wStart > 0 && cooldownOf("W") <= 0) setCooldown("W");
-  if (state.wStart > 0) stopSkillSound("W");
-  state.recast.W = 0;
-  state.wStart = 0;
-  state.wChargeHudActive = false;
-  state.wVoiceIndex = null;
+  if (!preserveW) {
+    // 일반 과전하 진입으로 W가 취소될 때만 쿨다운을 적용한다.
+    if (state.wStart > 0 && cooldownOf("W") <= 0) setCooldown("W");
+    if (state.wStart > 0) stopSkillSound("W");
+    state.recast.W = 0;
+    state.wStart = 0;
+    state.wChargeHudActive = false;
+    state.wVoiceIndex = null;
+  }
   resetBackstep();                  // 과전하 진입 시 백스텝(E) 초기화
   floating(reason || "과전하", state.aiden, "gold");
   startOverchargeLoop();
@@ -849,9 +851,9 @@ function activeCast() {
 }
 
 function canUse(key) {
-  // 돌진 중에는 일반 스킬 불가. 단 E2·R2 재시전 이동과 충전된 W2 방출은 허용한다.
+  // 돌진 중에는 충전된 W2 방출만 허용한다. E2·R2 재시전 이동도 사용할 수 없다.
   const wRecast = key === "W" && isWCharging();
-  if (state.dash && !(key === "E" && isERecast()) && !(key === "R" && isRRecast()) && !wRecast) return false;
+  if (state.dash && !wRecast) return false;
   // D(빗겨 흘리기) 시전 중에는 R·E 포함 모든 스킬 사용 불가.
   if (isCasting("D") && key !== "D") return false;
   if (isWCharging() && key !== "W" && !(key === "E" && isERecast()) && !(key === "R" && isRRecast())) return false;
@@ -1334,7 +1336,7 @@ function useR() {
     const r2Hit = castSecondLightning();
     if (r2Hit) {
       state.charge = MAX_CHARGE;
-      enterOvercharge("낙뢰 과전하", true);
+      enterOvercharge("낙뢰 과전하", true, { preserveW: true });
     }
     // 과전하 진입 음성이 R2 대사를 덮지 않도록 모든 R2 처리 뒤 재생한다.
     playVoice("R2", state.rVoiceIndex);
@@ -1427,6 +1429,8 @@ function requestSkill(key) {
   if (canUse(key)) {
     useSkill(key);
   } else {
+    // 돌진 중 입력한 E2·R2는 돌진 종료 뒤 자동 발동하지 않도록 버퍼에도 넣지 않는다.
+    if (state.dash && ((key === "E" && isERecast()) || (key === "R" && isRRecast()))) return;
     // 빗겨 흘리기(D) 시전 중에는 R2(낙뢰 이동)·E2(볼트 러시)를 선입력(버퍼)하지 않는다.
     if (isCasting("D") && ((key === "E" && isERecast()) || (key === "R" && isRRecast()))) return;
     state.buffer = { type: "skill", key, time: nowSeconds() };
