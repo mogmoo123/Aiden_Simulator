@@ -8,7 +8,7 @@
 - 기술: HTML, CSS, Vanilla JavaScript
 - 프레임워크·번들러·외부 의존성·테스트·린트·CI: 없음
 - 언어: 한국어 UI
-- 자산 캐시 키: `app.js?v=1.2.6`, `styles.css?v=1.2.6`
+- 자산 캐시 키: `app.js?v=1.2.19`, `styles.css?v=1.2.19`
 
 ## 문서 기준
 
@@ -78,6 +78,7 @@ python -m http.server 8000
 - Y: 카메라 잠금 토글
 - F11: 전체화면 전환, Esc: 전체화면 종료; 두 액션 모두 조작키 변경 지원
 - A: 평타 사거리 유지 표시
+- A 스마트 캐스팅 ON: A 키다운 사거리 표시, A 키업 사거리 표시 종료
 - A 사거리 표시 활성 + 원 내부 좌클릭: 이동 없이 사거리 내 최근접 적 평타
 - A 사거리 원 외부 좌클릭: 공격 없음
 - Esc: 인디케이터 조준 취소
@@ -147,7 +148,8 @@ python -m http.server 8000
 - 피해 반경: 2.75m
 - 중심 CC 반경: 1m
 - R2: R1 위치 이동, 2차 낙뢰 즉시 발동
-- R2 적중: 과전하 강제 재진입, 탄환·지속시간 재충전, E 초기화
+- R1 적중: 전하 +1
+- R2 적중: 전하 +1 후 0.1초 지연 풀충전, 일반 상태 풀충전 시 기존 거리 조건으로 과전하 전환
 - 미재시전: 타이머 만료 시 자동 2타
 - R1 시전시간: 0.34초
 - R2: 비차단 캐스트
@@ -185,7 +187,7 @@ python -m http.server 8000
 - 돌진 중 E2·R2 사용·선입력 버퍼 차단, 충전된 W2 방출만 허용
 - R2·F 이동: `teleportTo()` 좌표 즉시 변경, 이동 보간 없음
 - W 충전 중: W2·E2·R2만 허용
-- R2 적중 과전하: W 차징·차징 바·W1 사운드·음성 페어 유지
+- 과전하 중 R2 적중 재진입: W 차징·차징 바·W1 사운드·음성 페어 유지
 
 ## 히트 판정
 
@@ -223,7 +225,7 @@ python -m http.server 8000
 - R1/R2: `R` 공유 채널, `R_CROSSFADE_MS=160`, R2 시전 시 R1 감쇠·중단 후 R2 재생
 - R1 출력: 다른 스킬과 동일한 HTML `Audio`, 모노 처리 없음
 - W 사운드 채널: 단일 재생, W1→W2 160ms 크로스페이드, 루프·종료 페이드아웃 없음
-- 평타 속도 제한: `state.nextBasicAttackAt` 독립 잠금, 간격 `1 / attackSpeed()`, 쿨타임 초기화 모드 영향 없음
+- 평타 속도 제한: `state.nextBasicAttackAt` 독립 잠금, 간격 `attackInterval()`, 유저 설정 공속 × 아이템 공속 배율 실시간 재계산, 쿨타임 초기화 모드 영향 없음
 - 전하 충전 버튼: 일반 상태 `addCharge()`로 `chargeDecay` 동시 갱신, 과전하 상태 탄환·지속시간 재충전
 - 적중 사운드: W=`W_타격.mp3`, E=`E_타격.mov`, R=`R_타격.mov`, 원거리 평타=`평타_원거리.mp3`, 원거리 Q=`Q_원거리_타격.mov`, 근거리 Q=`Q_타격.mov`, 근거리 평타·D=`타격.mov`
 
@@ -236,11 +238,16 @@ python -m http.server 8000
 
 ## UI 기능
 
+- 추가 효과: `#extraEffectsBtn` → `#extraEffectModal`
+- 추가 효과 토글: 의념, 현란함, 뇌명 집행, 각성
+- 추가 효과 설명: `.extra-effect-option:hover .extra-effect-desc`, hover/focus 표시
+- 옵션: `#optionsBtn` → `#optionsModal`
+- 옵션 토글: 마우스 방향 보기, 카메라 잠금, 스킬 사거리 표시, A 스마트 캐스팅, 쿨타임 초기화, 스킬 후 자동 공격, 더미 좌우 이동, 카메라 흔들림, 음성 대사, 미안해 알렉스
 - 쿨다운 초기화 모드
 - 수동 쿨다운 초기화
 - 전하 최대 충전
 - 더미 배치 모드
-- 더미 이동 토글
+- 더미 이동 토글: 중심점 기준 좌우 3m 등속 왕복, 속도 `#moveSpeed` 기준
 - 더미 전체 회복
 - 실험체 상태 초기화
 - 카메라 흔들림
@@ -250,6 +257,53 @@ python -m http.server 8000
 - 카메라 잠금·감도
 - 알렉스 더미 전환
 - F12 콘솔: `debug()`, `debug(true)`, `debug(false)`
+
+## 추가 효과 1.2
+
+- 상태: `state.extraEffects`
+- 초기화: `createExtraEffectsState()`, `resetExtraEffect()`
+- UI 상태 표시: 삭제
+- 타이머 갱신: `updateExtraEffects(delta)`
+- 스킬 사용 트리거: `triggerSkillUseEffects(key, context)`
+- 피해 적중 트리거: `damageDummy(dummy, amount, label, meta)`
+- 평타 적중 트리거: `applyBasicAttackEffects(target, ranged)`
+- 쿨타임 초기화 모드: 아이템 쿨다운 0초 유지
+- 중첩 방지: 의념 단일 충전, 각성 active 중 재발동 차단, 뇌명 집행 active 중 재발동 차단
+- 발동 이펙트: `spawnItemEffect(point, kind, size)`, `.fx-item-*`
+- 적용 로그: `logEvent(..., "item")`, 금색 로그
+
+### 의념
+
+- 발동 조건: 스킬 사용
+- 상태: `willpower.armed = 3초`
+- 쿨다운: 2초
+- 소모 조건: 다음 기본 공격 적중
+- 추가 피해: 근거리 `대상 최대 체력 * 0.12`, 원거리 `대상 최대 체력 * 0.11`
+
+### 뇌명 집행
+
+- 발동 조건: 5초 안에 기본 공격 또는 스킬 피해 2회 적중
+- 상태: 8초, 방어 관통 +12
+- 쿨다운: 15초
+- 처치 관여 대체 판정: 더미 HP가 1까지 내려갈 때
+- 보상: 크레딧 +25, 이동 속도 +20% 2초, 뇌명 집행 제거
+
+### 각성
+
+- 발동 조건: R1 사용
+- 상태: 8초
+- 효과: 공격 속도 +30%, 이동 속도 +12%
+- 쿨다운: 20초
+- 공격 속도 반영: `attackSpeedMultiplier()`, `syncBasicAttackCooldown()`
+- 충돌 무시: 현재 충돌 시스템 없음, 상태 기록만 유지
+
+### 현란함
+
+- 발동 조건: 피해 적중
+- 중첩: 최대 8
+- 지속 시간: 각 중첩 3초
+- 이동 속도: 근거리 중첩당 +3%, 원거리 중첩당 +1.5%
+
 
 ## 수정 원칙
 

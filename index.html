@@ -15,7 +15,7 @@
     <meta name="description" content="나 에이든은 마침내 독자적인 훈련 능력을 얻었다." />
     <link rel="icon" href="src/Aiden_P.png" />
     <title>든뮬레이터</title>
-    <link rel="stylesheet" href="styles.css?v=1.2.6" />
+    <link rel="stylesheet" href="styles.css?v=1.2.19" />
   </head>
   <body>
     <main class="simulator" aria-label="에이든 전투 연습장">
@@ -70,48 +70,14 @@
           </div>
 
           <div class="panel-group controls">
-            <label class="toggle">
-              <input type="checkbox" id="autoFace" />
-              <span>마우스 방향 보기</span>
-            </label>
-            <label class="toggle">
-              <input type="checkbox" id="cameraLock" checked />
-              <span id="cameraLockLabel">카메라 잠금 (Y)</span>
-            </label>
-            <label class="toggle">
-              <input type="checkbox" id="rangePreview" />
-              <span>스킬 사거리 표시</span>
-            </label>
-            <label class="toggle">
-              <input type="checkbox" id="cooldownResetMode" />
-              <span id="cooldownResetLabel">쿨타임 초기화</span>
-            </label>
-            <label class="toggle">
-              <input type="checkbox" id="autoAttackAfterSkill" />
-              <span>스킬 후 자동 공격</span>
-            </label>
-            <label class="toggle">
-              <input type="checkbox" id="dummyMoveMode" />
-              <span>더미 이동</span>
-            </label>
-            <label class="toggle">
-              <input type="checkbox" id="cameraShakeMode" checked />
-              <span>카메라 흔들림</span>
-            </label>
-            <label class="toggle">
-              <input type="checkbox" id="voiceMode" checked />
-              <span>음성 대사</span>
-            </label>
-            <label class="toggle">
-              <input type="checkbox" id="alexMode" />
-              <span id="alexLabel">미안해.. 알렉스</span>
-            </label>
             <div class="setting-row">
               <label for="camSens">카메라 감도</label>
               <input type="number" id="camSens" value="20" min="1" max="200" step="5" />
             </div>
             <div class="keybind-row">
               <button class="keybind-open" id="openKeybindsBtn" type="button">조작키 변경</button>
+              <button class="keybind-open" id="optionsBtn" type="button">옵션</button>
+              <button class="keybind-open" id="extraEffectsBtn" type="button">추가 효과</button>
             </div>
             <div class="button-grid">
               <button id="healBtn" type="button">전체 회복</button>
@@ -128,6 +94,92 @@
             <button class="keybind-modal-close" id="keybindModalClose" type="button" aria-label="닫기" title="닫기">×</button>
           </div>
           <div class="keybinds" id="keybinds"></div>
+        </dialog>
+
+        <dialog class="keybind-modal options-modal" id="optionsModal" aria-labelledby="optionsModalTitle">
+          <div class="keybind-modal-head">
+            <h2 id="optionsModalTitle">옵션</h2>
+            <button class="keybind-modal-close" id="optionsModalClose" type="button" aria-label="닫기" title="닫기">×</button>
+          </div>
+          <div class="option-settings">
+            <label class="toggle">
+              <input type="checkbox" id="autoFace" />
+              <span>마우스 방향 보기</span>
+            </label>
+            <label class="toggle">
+              <input type="checkbox" id="cameraLock" checked />
+              <span id="cameraLockLabel">카메라 잠금 (Y)</span>
+            </label>
+            <label class="toggle">
+              <input type="checkbox" id="rangePreview" />
+              <span>스킬 사거리 표시</span>
+            </label>
+            <label class="toggle">
+              <input type="checkbox" id="aSmartCastMode" />
+              <span>A 스마트 캐스팅</span>
+            </label>
+            <label class="toggle">
+              <input type="checkbox" id="cooldownResetMode" />
+              <span id="cooldownResetLabel">쿨타임 초기화</span>
+            </label>
+            <label class="toggle">
+              <input type="checkbox" id="autoAttackAfterSkill" />
+              <span>스킬 후 자동 공격</span>
+            </label>
+            <label class="toggle">
+              <input type="checkbox" id="dummyMoveMode" />
+              <span>더미 좌우 이동</span>
+            </label>
+            <label class="toggle">
+              <input type="checkbox" id="cameraShakeMode" checked />
+              <span>카메라 흔들림</span>
+            </label>
+            <label class="toggle">
+              <input type="checkbox" id="voiceMode" checked />
+              <span>음성 대사</span>
+            </label>
+            <label class="toggle">
+              <input type="checkbox" id="alexMode" />
+              <span id="alexLabel">미안해.. 알렉스</span>
+            </label>
+          </div>
+        </dialog>
+
+        <dialog class="keybind-modal extra-effect-modal" id="extraEffectModal" aria-labelledby="extraEffectModalTitle">
+          <div class="keybind-modal-head">
+            <h2 id="extraEffectModalTitle">추가 효과</h2>
+            <button class="keybind-modal-close" id="extraEffectModalClose" type="button" aria-label="닫기" title="닫기">×</button>
+          </div>
+          <div class="extra-effects">
+            <label class="toggle extra-effect-option">
+              <input type="checkbox" id="effectWillpower" />
+              <span class="effect-copy">
+                <b>의념</b>
+                <span class="extra-effect-desc">스킬 사용 후 3초 안에 다음 기본 공격이 대상 최대 체력 비례 추가 피해를 줍니다. 쿨다운 2초.</span>
+              </span>
+            </label>
+            <label class="toggle extra-effect-option">
+              <input type="checkbox" id="effectGlamour" />
+              <span class="effect-copy">
+                <b>현란함</b>
+                <span class="extra-effect-desc">개별 피해 적중 시 3초 동안 이동 속도 증가 중첩을 얻습니다. 근거리 3%, 원거리 1.5%, 최대 8중첩.</span>
+              </span>
+            </label>
+            <label class="toggle extra-effect-option">
+              <input type="checkbox" id="effectThunder" />
+              <span class="effect-copy">
+                <b>뇌명 집행</b>
+                <span class="extra-effect-desc">5초 안에 기본 공격 또는 스킬 2회 적중 시 8초 동안 방어 관통 +12. 쿨다운 15초.</span>
+              </span>
+            </label>
+            <label class="toggle extra-effect-option">
+              <input type="checkbox" id="effectAwakening" />
+              <span class="effect-copy">
+                <b>각성</b>
+                <span class="extra-effect-desc">궁극기 사용 시 8초 동안 공격 속도 +30%, 이동 속도 +12%를 얻습니다. 쿨다운 20초.</span>
+              </span>
+            </label>
+          </div>
         </dialog>
 
         <div class="cast-panel w-cast-panel" id="wCastPanel" aria-live="polite">
@@ -164,6 +216,6 @@
       </section>
     </main>
 
-    <script src="app.js?v=1.2.6"></script>
+    <script src="app.js?v=1.2.19"></script>
   </body>
 </html>

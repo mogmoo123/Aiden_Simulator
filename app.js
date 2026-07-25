@@ -41,6 +41,8 @@ RANGE.D_DASH = 3 * M;          // D 반격 돌진 거리 3m
 RANGE.F = 3 * M;               // F(전술 스킬) 사거리 3m
 const E_PROJECTILE_SPEED = 15.5 * M; // E 투사체 속도 15.5m/s (px/s)
 const MOVE_SPEED_DEFAULT = 4.08;     // 기본 이동 속도 4.08m/s (UI에서 조절)
+const DUMMY_MOVE_RANGE = 3 * M;      // 더미 이동: 중심 기준 좌우 3m
+const R2_FULL_CHARGE_DELAY = 0.1;    // R2 적중 전하 +1 이후 풀충전까지의 짧은 틈
 
 const CAST = {
   Q_NORMAL: 0.216,
@@ -104,6 +106,15 @@ const voices = {
   ]
 };
 
+function createExtraEffectsState() {
+  return {
+    willpower: { cooldown: 0, armed: 0 },
+    thunder: { cooldown: 0, window: 0, hits: 0, active: 0, credits: 0, haste: 0 },
+    awakening: { cooldown: 0, active: 0 },
+    glamour: { stacks: [] }
+  };
+}
+
 const state = {
   mode: "normal",
   charge: 0,
@@ -127,9 +138,12 @@ const state = {
   rTarget: null,
   rHit: false,
   pendingE1Release: null,
+  pendingR2FullCharge: 0,
   wVoiceIndex: null,
   rVoiceIndex: null,
+  extraEffects: createExtraEffectsState(),
   nextBasicAttackAt: 0,
+  basicAttackInterval: 1 / ATTACK_RATE.melee,
   cam: { x: 38, y: 56 },
   spaceHeld: false,
   pointer: { x: 0, y: 0 },
@@ -148,12 +162,13 @@ const state = {
   previewSkill: "Q",
   pendingSkill: null,
   showAttackRange: false,
+  aSmartCasting: false,
   attackMove: null,
   skillAutoAttackActive: false,
   debugMode: false,
   nextDummyId: 2,
   dummies: [
-    { id: 1, x: 40, y: 55, hp: 100, vx: 1, vy: 0.35, seed: 0.4 }
+    { id: 1, x: 40, y: 55, hp: 100, maxHp: 100, vx: 1, vy: 0.35, seed: 0.4, moveAnchorX: 40, moveAnchorY: 55, moveOffset: 0, moveDir: 1 }
   ],
   lastTick: performance.now()
 };
@@ -180,12 +195,23 @@ const els = {
   dummyCount: document.getElementById("dummyCount"),
   autoFace: document.getElementById("autoFace"),
   rangePreview: document.getElementById("rangePreview"),
+  aSmartCastMode: document.getElementById("aSmartCastMode"),
   cooldownResetMode: document.getElementById("cooldownResetMode"),
   cooldownResetLabel: document.getElementById("cooldownResetLabel"),
   autoAttackAfterSkill: document.getElementById("autoAttackAfterSkill"),
   openKeybindsBtn: document.getElementById("openKeybindsBtn"),
   keybindModal: document.getElementById("keybindModal"),
   keybindModalClose: document.getElementById("keybindModalClose"),
+  optionsBtn: document.getElementById("optionsBtn"),
+  optionsModal: document.getElementById("optionsModal"),
+  optionsModalClose: document.getElementById("optionsModalClose"),
+  extraEffectsBtn: document.getElementById("extraEffectsBtn"),
+  extraEffectModal: document.getElementById("extraEffectModal"),
+  extraEffectModalClose: document.getElementById("extraEffectModalClose"),
+  effectWillpower: document.getElementById("effectWillpower"),
+  effectGlamour: document.getElementById("effectGlamour"),
+  effectThunder: document.getElementById("effectThunder"),
+  effectAwakening: document.getElementById("effectAwakening"),
   dummyMoveMode: document.getElementById("dummyMoveMode"),
   cameraShakeMode: document.getElementById("cameraShakeMode"),
   voiceMode: document.getElementById("voiceMode"),
@@ -256,19 +282,78 @@ function moveSpeedMps() {
   return Number.isFinite(v) && v > 0 ? v : MOVE_SPEED_DEFAULT;
 }
 
-// 공격 속도(회/초): UI 입력값. 미설정 시 근접 기본값. 평타 쿨다운 = 1 / 공격속도.
-function attackSpeed() {
+function attackSpeedBase() {
   const v = parseFloat(els.attackSpeed.value);
   return Number.isFinite(v) && v > 0 ? v : ATTACK_RATE.melee;
 }
 
+function attackSpeedMultiplier() {
+  return state.extraEffects.awakening.active > 0 && extraEffectEnabled("awakening") ? 1.3 : 1;
+}
+
+// 공격 속도(회/초): 유저 설정값에 아이템 효과 배율을 실시간 반영한다.
+function attackSpeed() {
+  return attackSpeedBase() * attackSpeedMultiplier();
+}
+
+function attackInterval() {
+  return 1 / clamp(attackSpeed(), 0.1, 20);
+}
+
+function syncBasicAttackCooldown() {
+  const now = nowSeconds();
+  const currentInterval = attackInterval();
+  if (state.nextBasicAttackAt <= 0) {
+    state.cooldowns.A = 0;
+    state.basicAttackInterval = currentInterval;
+    return;
+  }
+
+  const remaining = state.nextBasicAttackAt - now;
+  if (remaining <= 0) {
+    state.nextBasicAttackAt = 0;
+    state.cooldowns.A = 0;
+    state.basicAttackInterval = currentInterval;
+    return;
+  }
+
+  const previousInterval = state.basicAttackInterval || currentInterval;
+  if (Math.abs(previousInterval - currentInterval) < 0.0005) {
+    state.cooldowns.A = remaining;
+    return;
+  }
+
+  const progressLeft = clamp(remaining / previousInterval, 0, 1);
+  const nextRemaining = currentInterval * progressLeft;
+  state.nextBasicAttackAt = now + nextRemaining;
+  state.cooldowns.A = nextRemaining;
+  state.basicAttackInterval = currentInterval;
+}
+
+function extraEffectEnabled(key) {
+  const map = {
+    willpower: els.effectWillpower,
+    glamour: els.effectGlamour,
+    thunder: els.effectThunder,
+    awakening: els.effectAwakening
+  };
+  return Boolean(map[key]?.checked);
+}
+
+function glamourMoveBonus() {
+  if (!extraEffectEnabled("glamour")) return 0;
+  return state.extraEffects.glamour.stacks.reduce((sum, stack) => sum + stack.bonus, 0);
+}
 
 // 현재 실효 이동 속도(m/s) — 기본값에 W 차징 슬로우·패시브 가속·백스텝 가속을 곱한 값.
 function effectiveMoveSpeedMps() {
   const slowed = state.recast.W > 0 && state.wStart > 0 ? 0.8 : 1;
   const hasted = state.hasteTime > 0 ? 1.13 : 1;
   const e2Haste = state.e2HasteTime > 0 ? 1.2 : 1;
-  return moveSpeedMps() * slowed * hasted * e2Haste;
+  const awakening = state.extraEffects.awakening.active > 0 && extraEffectEnabled("awakening") ? 1.12 : 1;
+  const thunderHaste = state.extraEffects.thunder.haste > 0 && extraEffectEnabled("thunder") ? 1.2 : 1;
+  const glamour = 1 + glamourMoveBonus();
+  return moveSpeedMps() * slowed * hasted * e2Haste * awakening * thunderHaste * glamour;
 }
 
 // ===== 조작감 설정 (control.md 로더) =====
@@ -748,6 +833,15 @@ function addCharge(amount, reason = "") {
   resetECooldownOnFullCharge(before);
 }
 
+function fillCharge(reason = "") {
+  if (isOvercharged()) return;
+  const before = state.charge;
+  state.charge = MAX_CHARGE;
+  state.chargeDecay = CHARGE_DURATION;
+  if (state.charge > before && reason) floating(reason, state.aiden, "blue");
+  resetECooldownOnFullCharge(before);
+}
+
 // force=true면 이미 과전하 상태여도 재돌입. preserveW=true는 R2 적중 중 W 차징을 유지한다.
 function enterOvercharge(reason = "", force = false, { preserveW = false } = {}) {
   if (!force && (isOvercharged() || state.charge < MAX_CHARGE)) return;
@@ -861,6 +955,7 @@ function canUse(key) {
   if (key === "E" && state.pendingE1Release) return false;
   if (key === "R" && isCasting("R")) return false;
   if (key !== "E" && !(key === "R" && isRRecast()) && hasBlockingCast()) return false;
+  if (key === "A") syncBasicAttackCooldown();
   if (key === "A" && nowSeconds() < state.nextBasicAttackAt) return false;
   if (cooldownOf(key) > 0) return false;
   if (key === "E" && state.recast.E > 0 && !markedDummy()) return false;
@@ -895,15 +990,131 @@ function beginCast(label, duration, onComplete, opts = {}) {
   });
 }
 
-function damageDummy(dummy, amount, label) {
+function resetExtraEffect(key = null) {
+  const fresh = createExtraEffectsState();
+  if (!key) {
+    state.extraEffects = fresh;
+    return;
+  }
+  state.extraEffects[key] = fresh[key];
+}
+
+function cooldownResetActive() {
+  return Boolean(els.cooldownResetMode?.checked);
+}
+
+function setExtraEffectCooldown(key, seconds) {
+  if (!state.extraEffects[key]) return;
+  state.extraEffects[key].cooldown = cooldownResetActive() ? 0 : seconds;
+}
+
+function resetExtraEffectCooldowns() {
+  state.extraEffects.willpower.cooldown = 0;
+  state.extraEffects.thunder.cooldown = 0;
+  state.extraEffects.awakening.cooldown = 0;
+}
+
+function triggerSkillUseEffects(key, context = {}) {
+  if (key === "A") return;
+  const effects = state.extraEffects;
+  if (extraEffectEnabled("willpower") && (cooldownResetActive() || effects.willpower.cooldown <= 0)) {
+    effects.willpower.armed = 3;
+    setExtraEffectCooldown("willpower", 2);
+    spawnItemEffect(state.aiden, "willpower", 122);
+    logEvent("★ 의념 충전", "item");
+  }
+  if (key === "R" && !context.recast && extraEffectEnabled("awakening")
+    && effects.awakening.active <= 0 && (cooldownResetActive() || effects.awakening.cooldown <= 0)) {
+    effects.awakening.active = 8;
+    setExtraEffectCooldown("awakening", 20);
+    spawnItemEffect(state.aiden, "awakening", 174);
+    logEvent("★ 각성 발동", "item");
+  }
+}
+
+function registerDamageEffects(dummy, meta = {}) {
+  const effects = state.extraEffects;
+  const form = meta.form || (isOvercharged() ? "ranged" : "melee");
+  if (extraEffectEnabled("glamour") && meta.glamour !== false) {
+    effects.glamour.stacks.push({ time: 3, bonus: form === "ranged" ? 0.015 : 0.03 });
+    while (effects.glamour.stacks.length > 8) effects.glamour.stacks.shift();
+    spawnItemEffect(dummy, "glamour", 108);
+    logEvent(`★ 현란함 ${effects.glamour.stacks.length}/8`, "item");
+  }
+  const sourceType = meta.type || "skill";
+  if (!extraEffectEnabled("thunder") || meta.thunder === false) return;
+  if (sourceType !== "basic" && sourceType !== "skill") return;
+  if ((effects.thunder.cooldown > 0 && !cooldownResetActive()) || effects.thunder.active > 0) return;
+  if (effects.thunder.window <= 0) {
+    effects.thunder.window = 5;
+    effects.thunder.hits = 0;
+  }
+  effects.thunder.hits += 1;
+  if (effects.thunder.hits >= 2) {
+    effects.thunder.active = 8;
+    setExtraEffectCooldown("thunder", 15);
+    effects.thunder.window = 0;
+    effects.thunder.hits = 0;
+    spawnItemEffect(dummy, "thunder", 136);
+    logEvent("★ 뇌명 집행 발동 · 방어 관통 +12", "item");
+  }
+}
+
+function resolveThunderTakedown(wouldFinish) {
+  const thunder = state.extraEffects.thunder;
+  if (!wouldFinish || !extraEffectEnabled("thunder") || thunder.active <= 0) return;
+  thunder.active = 0;
+  thunder.haste = 2;
+  thunder.credits += 25;
+  spawnItemEffect(state.aiden, "thunder", 150);
+  logEvent("★ 뇌명 집행 처치 관여 · 크레딧 +25 · 이속 +20%", "item");
+}
+
+function applyBasicAttackEffects(target, ranged) {
+  const effects = state.extraEffects;
+  const form = ranged ? "ranged" : "melee";
+  if (extraEffectEnabled("willpower") && effects.willpower.armed > 0) {
+    const maxHp = target.maxHp || 100;
+    const damage = Math.round(maxHp * (ranged ? 0.11 : 0.12));
+    effects.willpower.armed = 0;
+    spawnItemEffect(target, "willpower", 118);
+    damageDummy(target, damage, "의념", { type: "item", form, thunder: false });
+    logEvent("★ 의념 적용", "item");
+  }
+}
+
+function updateExtraEffects(delta) {
+  const effects = state.extraEffects;
+  effects.willpower.cooldown = Math.max(0, effects.willpower.cooldown - delta);
+  effects.willpower.armed = Math.max(0, effects.willpower.armed - delta);
+  effects.thunder.cooldown = Math.max(0, effects.thunder.cooldown - delta);
+  effects.thunder.window = Math.max(0, effects.thunder.window - delta);
+  effects.thunder.active = Math.max(0, effects.thunder.active - delta);
+  effects.thunder.haste = Math.max(0, effects.thunder.haste - delta);
+  if (effects.thunder.window <= 0) effects.thunder.hits = 0;
+  effects.awakening.cooldown = Math.max(0, effects.awakening.cooldown - delta);
+  effects.awakening.active = Math.max(0, effects.awakening.active - delta);
+  if (cooldownResetActive()) resetExtraEffectCooldowns();
+  effects.glamour.stacks = effects.glamour.stacks
+    .map((stack) => ({ ...stack, time: stack.time - delta }))
+    .filter((stack) => stack.time > 0);
+}
+
+function damageDummy(dummy, amount, label, meta = {}) {
   if (!dummy || amount <= 0) return;
-  dummy.hp = clamp(dummy.hp - amount, 1, 100); // 죽지 않고 체력 최소 1로 고정
+  const damage = Math.max(0, Math.round(amount));
+  if (damage <= 0) return;
+  const maxHp = dummy.maxHp || 100;
+  const wouldFinish = dummy.hp - damage <= 1;
+  dummy.hp = clamp(dummy.hp - damage, 1, maxHp); // 죽지 않고 체력 최소 1로 고정
   dummy.regenDelay = 1.2;                       // 피격 후 잠깐 뒤부터 자연 회복
   state.lastHitDummyId = dummy.id;
   floating("Hit", dummy, "hit");
   spawnHit(dummy);
   shake();
-  logEvent(`✔ ${label || "타격"} 명중 (-${amount})`, "hit");
+  logEvent(`✔ ${label || "타격"} 명중 (-${damage})`, "hit");
+  resolveThunderTakedown(wouldFinish);
+  registerDamageEffects(dummy, meta);
 }
 
 function floating(text, point, tone = "hit") {
@@ -935,6 +1146,10 @@ function spawnBase(className, point, size = 80) {
 
 function spawnCircle(point, size, className = "fx-circle") {
   spawnBase(className, point, size);
+}
+
+function spawnItemEffect(point, kind, size = 118) {
+  spawnBase(`fx-item fx-item-${kind}`, point, size);
 }
 
 function spawnLine(start, end, className = "fx-line", width = 10) {
@@ -1097,18 +1312,21 @@ function basicAttack() {
   }
   const dir = direction(state.aiden, target);
   state.facing = dir.angle;
-  const attackInterval = 1 / attackSpeed();
-  state.nextBasicAttackAt = nowSeconds() + attackInterval;
-  state.cooldowns.A = attackInterval;
+  const interval = attackInterval();
+  state.nextBasicAttackAt = nowSeconds() + interval;
+  state.basicAttackInterval = interval;
+  state.cooldowns.A = interval;
   beginCast(getSkillName("A"), CAST.A, () => {
     if (overcharged) {
       if (!consumeBullet(1)) return;
       spawnBullet(state.aiden, target);
-      damageDummy(target, 8, "치명 원거리");
+      damageDummy(target, 8, "치명 원거리", { type: "basic", form: "ranged" });
+      applyBasicAttackEffects(target, true);
     } else {
       spawnSlash(dir.angle);
       // 근접 평타는 투사체 없이 공격 프레임에 즉시 적중하는 히트스캔 판정이다.
-      damageDummy(target, 5, "평타");
+      damageDummy(target, 5, "평타", { type: "basic", form: "melee" });
+      applyBasicAttackEffects(target, false);
     }
     playSkillSound(overcharged ? "src/sound/평타_원거리.mp3" : "src/sound/타격.mov");
     // 평타 적중당 현재 모드의 Q(근거리=Q_NORMAL / 원거리=Q_OVER) 쿨타임을 1.5초 감소(근·원 Q 쿨 독립)
@@ -1311,7 +1529,10 @@ function castSecondLightning() {
   outer.forEach((dummy) => {                               // 한번 더 낙뢰
     damageDummy(dummy, center.includes(dummy) ? 24 : 18, center.includes(dummy) ? "중심 낙뢰 2타" : "낙뢰 2타");
   });
-  if (outer.length > 0) playSkillSound("src/sound/R_타격.mov");
+  if (outer.length > 0) {
+    playSkillSound("src/sound/R_타격.mov");
+    addCharge(1, "R");
+  }
   state.rTarget = null;
   state.rHit = false;
   state.recast.R = 0;
@@ -1323,6 +1544,7 @@ function useR() {
   if (!canUse("R")) return false;
   if (state.recast.R > 0 && state.rTarget) {
     // R2(낙뢰 이동)는 보간 없이 목표 좌표로 즉시 이동한다.
+    const wasOvercharged = isOvercharged();
     crossfadeSkillSound("R", "src/sound/R2.mp3", 0.8, R_CROSSFADE_MS);
     spawnLine(state.aiden, state.rTarget, "fx-line", 9);
     teleportTo(state.rTarget);
@@ -1331,12 +1553,12 @@ function useR() {
       state.pendingE1Release = null;
       releaseE1(pendingE1.aimTarget);
     }
-    // R2 낙뢰가 적에게 맞으면 과전하 즉시 (재)돌입. 이미 과전하여도 force로 재돌입해
-    // 탄환·지속시간이 다시 초기화되고, 과전하 진입의 부수효과로 백스텝(E)도 초기화된다.
+    // R2 적중: 전하 +1은 castSecondLightning()에서 먼저 처리하고, 일반 상태면 0.1초 뒤 풀충전만 만든다.
     const r2Hit = castSecondLightning();
-    if (r2Hit) {
-      state.charge = MAX_CHARGE;
+    if (r2Hit && wasOvercharged) {
       enterOvercharge("낙뢰 과전하", true, { preserveW: true });
+    } else if (r2Hit) {
+      state.pendingR2FullCharge = R2_FULL_CHARGE_DELAY;
     }
     // 과전하 진입 음성이 R2 대사를 덮지 않도록 모든 R2 처리 뒤 재생한다.
     playVoice("R2", state.rVoiceIndex);
@@ -1361,7 +1583,10 @@ function useR() {
     outer.forEach((dummy) => {                         // 낙뢰 1개
       damageDummy(dummy, center.includes(dummy) ? 18 : 12, center.includes(dummy) ? "중심 낙뢰" : "낙뢰");
     });
-    if (outer.length > 0) playSkillSound("src/sound/R_타격.mov");
+    if (outer.length > 0) {
+      playSkillSound("src/sound/R_타격.mov");
+      addCharge(1, "R");
+    }
     state.rHit = outer.length > 0;
     state.recast.R = skillDefs.R.recast;
   }, { skill: "R" });
@@ -1408,6 +1633,7 @@ function useF() {
 function useSkill(key) {
   if (!skillDefs[key]) return false;
   state.previewSkill = key;
+  const wasRecast = (key === "R" && isRRecast()) || (key === "E" && isERecast()) || (key === "W" && isWCharging());
   let used = false;
   if (key === "Q") used = useQ();
   if (key === "W") used = useW();
@@ -1415,7 +1641,10 @@ function useSkill(key) {
   if (key === "R") used = useR();
   if (key === "D") used = useD();
   if (key === "F") used = useF();
-  if (used && els.autoAttackAfterSkill.checked) state.skillAutoAttackActive = true;
+  if (used) {
+    triggerSkillUseEffects(key, { recast: wasRecast });
+    if (els.autoAttackAfterSkill.checked) state.skillAutoAttackActive = true;
+  }
   render();
   return used;
 }
@@ -1542,6 +1771,35 @@ function updateMovement(delta) {
 
 const DUMMY_REGEN = 12; // 체력 자연 회복 속도(초당)
 
+function setDummyMoveAnchor(dummy) {
+  dummy.moveAnchorX = dummy.x;
+  dummy.moveAnchorY = dummy.y;
+  dummy.moveOffset = 0;
+  dummy.moveDir = dummy.moveDir === -1 ? -1 : 1;
+}
+
+function ensureDummyMoveAnchor(dummy) {
+  if (!Number.isFinite(dummy.moveAnchorX) || !Number.isFinite(dummy.moveAnchorY)) {
+    setDummyMoveAnchor(dummy);
+  }
+  if (!Number.isFinite(dummy.moveOffset)) dummy.moveOffset = 0;
+  if (dummy.moveDir !== -1 && dummy.moveDir !== 1) dummy.moveDir = 1;
+}
+
+function reflectDummyOffset(dummy, range, step) {
+  let next = dummy.moveOffset + dummy.moveDir * step;
+  while (Math.abs(next) > range && range > 0) {
+    if (next > range) {
+      next = range - (next - range);
+      dummy.moveDir = -1;
+    } else if (next < -range) {
+      next = -range + (-range - next);
+      dummy.moveDir = 1;
+    }
+  }
+  dummy.moveOffset = clamp(next, -range, range);
+}
+
 function updateDummies(delta) {
   // 피격 후 잠깐 뒤부터 체력이 시간에 따라 자연 회복(최대 100)
   state.dummies.forEach((dummy) => {
@@ -1552,22 +1810,29 @@ function updateDummies(delta) {
     }
   });
 
-  if (!els.dummyMoveMode.checked) return;
-  state.dummies.forEach((dummy) => {
-    const px = toPx(dummy);
-    let next = { x: px.x + dummy.vx * 120 * delta, y: px.y + dummy.vy * 34 * delta };
-    const rect = fieldRect();
-    if (next.x < 110 || next.x > rect.width - 120) dummy.vx *= -1;
-    if (next.y < 120 || next.y > rect.height - 120) dummy.vy *= -1;
-    next = { x: px.x + dummy.vx * 120 * delta, y: px.y + dummy.vy * 34 * delta };
-    Object.assign(dummy, clampPoint(fromPx(next), 7));
-  });
+  if (els.dummyMoveMode.checked) {
+    state.dummies.forEach((dummy) => {
+      ensureDummyMoveAnchor(dummy);
+      const anchor = toPx({ x: dummy.moveAnchorX, y: dummy.moveAnchorY });
+      const leftLimit = toPx({ x: 7, y: dummy.moveAnchorY }).x;
+      const rightLimit = toPx({ x: 93, y: dummy.moveAnchorY }).x;
+      const range = Math.min(DUMMY_MOVE_RANGE, Math.max(0, anchor.x - leftLimit), Math.max(0, rightLimit - anchor.x));
+      reflectDummyOffset(dummy, range, moveSpeedMps() * M * delta);
+      const next = {
+        x: anchor.x + dummy.moveOffset,
+        y: anchor.y
+      };
+      Object.assign(dummy, clampPoint(fromPx(next), 7));
+    });
+  }
 }
 
 function updateTimers(delta) {
   Object.keys(state.cooldowns).forEach((key) => {
     state.cooldowns[key] = Math.max(0, state.cooldowns[key] - delta);
   });
+  updateExtraEffects(delta);
+  syncBasicAttackCooldown();
 
   Object.keys(state.recast).forEach((key) => {
     state.recast[key] = Math.max(0, state.recast[key] - delta);
@@ -1575,6 +1840,10 @@ function updateTimers(delta) {
   state.eDelay = Math.max(0, state.eDelay - delta);
   state.eRelock = Math.max(0, state.eRelock - delta);
   state.e2HasteTime = Math.max(0, (state.e2HasteTime || 0) - delta);
+  if (state.pendingR2FullCharge > 0) {
+    state.pendingR2FullCharge = Math.max(0, state.pendingR2FullCharge - delta);
+    if (state.pendingR2FullCharge <= 0) fillCharge("전하 최대");
+  }
 
   if (state.pendingE1Release) {
     state.pendingE1Release.remaining -= delta;
@@ -1613,7 +1882,7 @@ function updateTimers(delta) {
         floating("전하 소멸", state.aiden, "gold");
       }
     }
-    if (state.charge >= MAX_CHARGE && !enemyNearby()) enterOvercharge("거리 확보 과전하");
+    if (state.charge >= MAX_CHARGE && state.pendingR2FullCharge <= 0 && !enemyNearby()) enterOvercharge("거리 확보 과전하");
   }
 }
 
@@ -1748,7 +2017,7 @@ function renderPanel() {
     ? `${Math.ceil(state.overTime)}`
     : (state.charge > 0 ? `${Math.ceil(state.chargeDecay)}` : "");
 
-  els.speedReadout.textContent = `이속 ${effectiveMoveSpeedMps().toFixed(2)} m/s`;
+  els.speedReadout.textContent = `이속 ${effectiveMoveSpeedMps().toFixed(2)} m/s · 공속 ${attackSpeed().toFixed(2)}/s`;
 }
 
 function renderWCast() {
@@ -1838,6 +2107,22 @@ function closeKeybindModal() {
   state.rebinding = null;
   renderKeybinds();
   if (els.keybindModal.open) els.keybindModal.close();
+}
+
+function openOptionsModal() {
+  if (!els.optionsModal.open) els.optionsModal.showModal();
+}
+
+function closeOptionsModal() {
+  if (els.optionsModal.open) els.optionsModal.close();
+}
+
+function openExtraEffectModal() {
+  if (!els.extraEffectModal.open) els.extraEffectModal.showModal();
+}
+
+function closeExtraEffectModal() {
+  if (els.extraEffectModal.open) els.extraEffectModal.close();
 }
 
 function renderKeybinds() {
@@ -1947,14 +2232,22 @@ function tick(time) {
 
 function addDummy(point = null) {
   const base = point || state.cursor;
+  const x = clamp(base.x, 6, 94);
+  const y = clamp(base.y, 6, 94);
+  const seed = Math.random();
   const dummy = {
     id: state.nextDummyId++,
-    x: clamp(base.x, 6, 94),
-    y: clamp(base.y, 6, 94),
+    x,
+    y,
     hp: 100,
+    maxHp: 100,
     vx: Math.random() > 0.5 ? 1 : -1,
     vy: Math.random() > 0.5 ? 0.35 : -0.35,
-    seed: Math.random()
+    seed,
+    moveAnchorX: x,
+    moveAnchorY: y,
+    moveOffset: 0,
+    moveDir: seed > 0.5 ? 1 : -1
   };
   state.dummies.push(dummy);
   state.lastHitDummyId = dummy.id;
@@ -1978,12 +2271,17 @@ function resetChampion() {
   state.casts = [];
   state.buffer = null;
   state.skillAutoAttackActive = false;
+  state.showAttackRange = false;
+  state.aSmartCasting = false;
   state.rTarget = null;
   state.rHit = false;
   state.pendingE1Release = null;
+  state.pendingR2FullCharge = 0;
   state.wVoiceIndex = null;
   state.rVoiceIndex = null;
+  resetExtraEffect();
   state.nextBasicAttackAt = 0;
+  state.basicAttackInterval = attackInterval();
   render();
 }
 
@@ -2012,16 +2310,21 @@ function reset() {
   state.rTarget = null;
   state.rHit = false;
   state.pendingE1Release = null;
+  state.pendingR2FullCharge = 0;
   state.wVoiceIndex = null;
   state.rVoiceIndex = null;
+  resetExtraEffect();
   state.nextBasicAttackAt = 0;
+  state.basicAttackInterval = attackInterval();
   state.cam = { x: 38, y: 56 };
   state.spaceHeld = false;
   state.aiden = { x: 38, y: 56 };
   state.cursor = { x: 58, y: 50 };
   state.previewSkill = "Q";
+  state.showAttackRange = false;
+  state.aSmartCasting = false;
   state.nextDummyId = 2;
-  state.dummies = [{ id: 1, x: 40, y: 55, hp: 100, vx: 1, vy: 0.35, seed: 0.4 }];
+  state.dummies = [{ id: 1, x: 40, y: 55, hp: 100, maxHp: 100, vx: 1, vy: 0.35, seed: 0.4, moveAnchorX: 40, moveAnchorY: 55, moveOffset: 0, moveDir: 1 }];
   document.querySelectorAll(".effect, .float-text, .ghost-trail").forEach((el) => el.remove());
   render();
 }
@@ -2107,6 +2410,14 @@ window.addEventListener("keydown", (event) => {
     if (event.code !== "Escape") event.preventDefault();
     return;
   }
+  if (els.optionsModal.open) {
+    if (event.code !== "Escape") event.preventDefault();
+    return;
+  }
+  if (els.extraEffectModal.open) {
+    if (event.code !== "Escape") event.preventDefault();
+    return;
+  }
   if (event.code === "Space") {
     event.preventDefault();
     state.spaceHeld = true;
@@ -2157,11 +2468,12 @@ window.addEventListener("keydown", (event) => {
     }
     return;
   }
-  // A 키: 평타 사거리 표시. 키를 떼도 유지되고, 활성화 중 좌클릭은 최근접 적 공격 이동.
+  // A 키: 평타 사거리 표시. 스마트 캐스팅 ON이면 키를 뗄 때 표시가 닫힌다.
   if (action === "A") {
     state.skillAutoAttackActive = false;
     if (!event.repeat) {
       state.showAttackRange = true;
+      state.aSmartCasting = Boolean(els.aSmartCastMode.checked);
       render();
     }
     return;
@@ -2183,6 +2495,12 @@ window.addEventListener("keyup", (event) => {
   state.shiftHeld = event.shiftKey;
   if (event.code === "Space") { state.spaceHeld = false; return; }
   const upAction = Object.keys(state.keybinds).find((a) => state.keybinds[a] === event.code);
+  if (upAction === "A" && els.aSmartCastMode.checked && state.aSmartCasting) {
+    state.showAttackRange = false;
+    state.aSmartCasting = false;
+    render();
+    return;
+  }
   // 사거리 표시 상태: 조준 중인 스킬의 키를 떼면 현재 커서 기준으로 시전
   if (state.pendingSkill) {
     if (upAction && upAction === state.pendingSkill) {
@@ -2223,6 +2541,24 @@ els.keybindModal.addEventListener("cancel", (event) => {
 els.keybindModal.addEventListener("click", (event) => {
   if (event.target === els.keybindModal) closeKeybindModal();
 });
+els.optionsBtn.addEventListener("click", openOptionsModal);
+els.optionsModalClose.addEventListener("click", closeOptionsModal);
+els.optionsModal.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeOptionsModal();
+});
+els.optionsModal.addEventListener("click", (event) => {
+  if (event.target === els.optionsModal) closeOptionsModal();
+});
+els.extraEffectsBtn.addEventListener("click", openExtraEffectModal);
+els.extraEffectModalClose.addEventListener("click", closeExtraEffectModal);
+els.extraEffectModal.addEventListener("cancel", (event) => {
+  event.preventDefault();
+  closeExtraEffectModal();
+});
+els.extraEffectModal.addEventListener("click", (event) => {
+  if (event.target === els.extraEffectModal) closeExtraEffectModal();
+});
 els.keybinds.addEventListener("click", (event) => {
   const btn = event.target.closest(".keybind");
   if (!btn) return;
@@ -2242,12 +2578,30 @@ els.cooldownResetMode.addEventListener("change", () => {
   if (els.cooldownResetMode.checked) {
     const attackCooldown = state.cooldowns.A || 0;
     state.cooldowns = attackCooldown > 0 ? { A: attackCooldown } : {};
+    resetExtraEffectCooldowns();
   }
   renderCooldownResetLabel();
   render();
 });
 els.autoAttackAfterSkill.addEventListener("change", () => {
   if (!els.autoAttackAfterSkill.checked) state.skillAutoAttackActive = false;
+});
+els.aSmartCastMode.addEventListener("change", () => {
+  if (els.aSmartCastMode.checked && !state.aSmartCasting) state.showAttackRange = false;
+  render();
+});
+els.dummyMoveMode.addEventListener("change", () => {
+  if (els.dummyMoveMode.checked) state.dummies.forEach(setDummyMoveAnchor);
+  render();
+});
+[els.effectWillpower, els.effectGlamour, els.effectThunder, els.effectAwakening].forEach((input) => {
+  input.addEventListener("change", () => {
+    if (!els.effectWillpower.checked) resetExtraEffect("willpower");
+    if (!els.effectGlamour.checked) resetExtraEffect("glamour");
+    if (!els.effectThunder.checked) resetExtraEffect("thunder");
+    if (!els.effectAwakening.checked) resetExtraEffect("awakening");
+    render();
+  });
 });
 
 // F12 콘솔에서 디버그(쿨타임 표시)를 켜고 끈다: debug() 토글, debug(true)/debug(false)
