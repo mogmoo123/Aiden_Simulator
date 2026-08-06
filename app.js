@@ -347,7 +347,7 @@ function glamourMoveBonus() {
 
 // 현재 실효 이동 속도(m/s) — 기본값에 W 차징 슬로우·패시브 가속·백스텝 가속을 곱한 값.
 function effectiveMoveSpeedMps() {
-  const slowed = state.recast.W > 0 && state.wStart > 0 ? 0.8 : 1;
+  const slowed = state.recast.W > 0 && state.wStart > 0 ? 0.85 : 1;
   const hasted = state.hasteTime > 0 ? 1.13 : 1;
   const e2Haste = state.e2HasteTime > 0 ? 1.2 : 1;
   const awakening = state.extraEffects.awakening.active > 0 && extraEffectEnabled("awakening") ? 1.12 : 1;
@@ -1596,23 +1596,22 @@ function useR() {
 function useD() {
   if (!canUse("D")) return false;
   playSkillSound("src/sound/D.mp3");
-  els.aiden.classList.add("parry");
-  setTimeout(() => els.aiden.classList.remove("parry"), CAST.D * 1000);
   const dir = direction(); // 시전 시작 시점 방향으로 고정
   state.facing = dir.angle;
   beginCast("빗겨 흘리기", CAST.D, () => {
     const end = offsetPoint(state.aiden, dir, RANGE.D_DASH, true);
-    spawnParry(dir);
     spawnLine(state.aiden, end, "fx-line", 11);
     dashTo(end, 0.14);
     const hits = lineHitDummies(state.aiden, end, 48);
     hits.forEach((dummy) => {
-      damageDummy(dummy, 14, "반격"); // D는 전하를 쌓지 않음
+      damageDummy(dummy, 14, "반격");
     });
-    if (hits.length > 0) playSkillSound("src/sound/타격.mov");
+    if (hits.length > 0) {
+      playSkillSound("src/sound/타격.mov");
+      addCharge(1, "D");
+    }
     setCooldown("D");
   }, { skill: "D" });
-  spawnParry(dir);
   return true;
 }
 
@@ -2611,8 +2610,13 @@ window.debug = function (on) {
   return state.debugMode;
 };
 
+window["12ss_test"] = function () {
+  console.log("[12ss_test] 양검무스 패치 기본 적용");
+  return true;
+};
+
 renderKeybinds();
 loadControlConfig();
 reset();
 requestAnimationFrame(tick);
-console.info("[디버그] 콘솔에서 debug() 입력 시 쿨타임 표시 ON/OFF");
+console.info('[디버그] 콘솔에서 debug() 입력 시 쿨타임 표시 ON/OFF, 양검무스 패치 기본 적용');

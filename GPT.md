@@ -8,7 +8,7 @@
 - 기술: HTML, CSS, Vanilla JavaScript
 - 프레임워크·번들러·외부 의존성·테스트·린트·CI: 없음
 - 언어: 한국어 UI
-- 자산 캐시 키: `app.js?v=1.2.19`, `styles.css?v=1.2.19`
+- 자산 캐시 키: `app.js?v=1.2.21`, `styles.css?v=1.2.21`
 
 ## 문서 기준
 
@@ -129,7 +129,7 @@ python -m http.server 8000
 - `전하소산(경계)` 적중음: `W_타격.mp3`
 - 적중 전하: +1
 - 충전 중 이동 허용
-- 현재 코드 이동 배율: `0.8`
+- 현재 코드 이동 배율: `0.85`
 
 ### E
 
@@ -163,6 +163,7 @@ python -m http.server 8000
 - 돌진 거리: 3m
 - 시전 중 다른 스킬 차단
 - E2·R2 입력 버퍼 금지
+- 기본 적용: 무적·방어 연출 삭제, 적중 시 전하 +1
 - 전하 획득 없음
 
 ### F
@@ -257,6 +258,7 @@ python -m http.server 8000
 - 카메라 잠금·감도
 - 알렉스 더미 전환
 - F12 콘솔: `debug()`, `debug(true)`, `debug(false)`
+- 양검무스 패치: 기본 적용, 콘솔 명령 불필요
 
 ## 추가 효과 1.2
 
@@ -342,7 +344,7 @@ python -m http.server 8000
 - `control.md`: `cancelSkillOnRightClick` 적용 표기
 - `app.js`: 우클릭 시 `cancelCasts()` 미호출, 캐스트 유지
 - W 이동 감소 요구: 80% 감소
-- `app.js`: W 충전 중 이동 배율 `0.8`, 실제 20% 감소
+- `app.js`: W 충전 중 이동 배율 `0.85`, 실제 15% 감소
 - 문서 일부 근접 평타 사거리: 1.65m 표기
 - `app.js`: `RANGE.ATTACK_MELEE = 2.3m`
 
