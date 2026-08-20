@@ -551,13 +551,18 @@ button {
   font-size: 12px;
 }
 
-.setting-row input[type="number"] {
+.setting-row input[type="number"],
+.setting-row select {
   width: 54px;
   padding: 3px 5px;
   border: 1px solid rgba(116, 135, 153, 0.32);
   background: rgba(15, 18, 23, 0.92);
   color: #e7f3ff;
   font-size: 12px;
+}
+
+.setting-row select {
+  width: 96px;
 }
 
 .keybind-label {

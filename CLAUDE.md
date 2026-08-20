@@ -11,7 +11,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 - `index.html` — DOM 골격(필드, 사이드 패널, 스킬 독). 모든 동적 엘리먼트는 여기 정의된 고정 id를 가짐.
 - `app.js` — 전체 엔진(상태, 게임 루프, 스킬 로직, 렌더링). 모듈/번들 없이 전역 스코프 1개 파일.
 - `styles.css` — 모든 비주얼. 스킬 이펙트는 `@keyframes` 애니메이션 + `.fx-*` 클래스로 구현.
-- `index.html`은 브라우저의 이전 자산 재사용을 막기 위해 `app.js?v=1.2.21`, `styles.css?v=1.2.21` 캐시 키를 사용한다. 실행 파일 변경 시 두 버전을 함께 올린다.
+- `index.html`은 브라우저의 이전 자산 재사용을 막기 위해 `app.js?v=1.2.23`, `styles.css?v=1.2.23` 캐시 키를 사용한다. 실행 파일 변경 시 두 버전을 함께 올린다.
 
 ## 작업 지침
 
@@ -76,7 +76,7 @@ python -m http.server 8000   # 그 후 http://localhost:8000 접속
 
 ### 자원/모드 시스템
 - **일반 모드**: 스킬 명중 시 `addCharge`로 "전하"가 쌓인다(최대 `MAX_CHARGE=5`). 전하는 **지속시간 `CHARGE_DURATION=5`초**로, 획득(`addCharge`)할 때마다 `state.chargeDecay`가 초기화되고, 5초간 추가 획득이 없으면 `updateTimers`(비과전하 분기)가 전하를 0으로 소멸시킨다.
-- 전하 5 도달 → 적이 근처에 없으면(`enemyNearby` false, 기준 반경 `RANGE.OVERCHARGE = 2.4m`) `enterOvercharge`로 **과전하** 진입. 전하가 "탄환"으로 바뀌고 Q·평타가 원거리 변형이 되며, 일부 스킬이 탄환을 소모(`consumeBullet`). 전하 만충·미전환(대기) 중에는 `renderRanges`가 그 2.4m 범위를 **파란 원**(`.overcharge-range`/`#overchargeRange`)으로 그리고, 과전하로 전환되면 사라진다. 과전하는 **`OVERCHARGE_TIME=7`초 지속시간 종료** 또는 **탄환 소진**(`consumeBullet`이 `bullets<=0`) 시 `leaveOvercharge` → 일시 가속(`hasteTime`, +13%). 스킬 독 우측의 패시브 슬롯(`#passiveSlot`, Aiden_P.png 아이콘)이 과전하 잔여 시간을 표시한다.
+- 전하 5 도달 → 적이 근처에 없으면(`enemyNearby` false, 기준 반경 `RANGE.OVERCHARGE = 2.4m`) `enterOvercharge`로 **과전하** 진입. 전하가 "탄환"으로 바뀌고 Q·평타가 원거리 변형이 되며, 일부 스킬이 탄환을 소모(`consumeBullet`). 전하 만충·미전환(대기) 중에는 `renderRanges`가 그 2.4m 범위를 **파란 원**(`.overcharge-range`/`#overchargeRange`)으로 그리고, 과전하로 전환되면 사라진다. 과전하는 **`OVERCHARGE_TIME=7`초 지속시간 종료** 또는 **탄환 소진**(`consumeBullet`이 `bullets<=0`) 시 `leaveOvercharge` → 일시 가속(`hasteTime`, 패시브 1/2/3레벨 +10/13/16%). 스킬 독 우측의 패시브 슬롯(`#passiveSlot`, Aiden_P.png 아이콘)이 과전하 잔여 시간을 표시한다.
 - 원거리 Q는 탄환 1개를 소모한다(`consumeBullet(1)`). 평타·E의 백스텝 사격도 과전하에서 탄환 발사체가 된다.
 - 전하 충전 버튼은 일반 상태에서 `addCharge(MAX_CHARGE - state.charge)`를 호출해 최초 0스택에서도 `chargeDecay=CHARGE_DURATION`을 함께 설정한다. 과전하 상태에서는 `bullets`와 `overTime`을 재충전한다.
 - 전하 획득은 **반드시 적(더미) 명중 시에만** 일어난다(빗맞거나 단순 시전으로는 안 쌓임): 일반 Q(뇌격) 명중 **+2**(`addCharge(2,"Q")`), W 2타(방출)는 **반경 내 명중 시 +1**(`hits.length>0`일 때만), E1 백스텝·E2 볼트 러시 명중 각 **+1**, R1·R2 낙뢰 명중 각 **+1**, D(반격) 경로 명중 **+1**. 기본 상태의 **W 1타(충전 윈드업)는 전하를 주지 않는다**.
@@ -92,8 +92,8 @@ python -m http.server 8000   # 그 후 http://localhost:8000 접속
 자동 만료/방출 로직이 `updateTimers`에 모여 있으므로, recast 동작을 바꿀 땐 `use*` 함수와 `updateTimers` 양쪽을 함께 봐야 한다.
 
 ### 공격 속도
-- 평타 쿨다운 = `attackInterval() = 1 / attackSpeed()`. 공격 속도는 **사이드 패널 "캐릭터 설정"의 `#attackSpeed` 입력(회/초, 기본 1.5)** 을 기준으로 `attackSpeedBase() × attackSpeedMultiplier()`를 계산한다. 각성 같은 아이템 공속 효과가 켜지거나 꺼질 때 `syncBasicAttackCooldown()`이 남은 평타 쿨다운 비율을 보존해 실시간 재계산한다. `ATTACK_RATE`는 폴백 기본값. 평타 입력 수락 시 `state.nextBasicAttackAt`을 잠그므로 우클릭·Shift+클릭·공격 이동·자동 공격의 연속 입력으로 공격속도를 초과할 수 없다. 쿨타임 초기화 모드는 독립 잠금과 `state.cooldowns.A` 표시를 제거하지 않는다.
-- 이동 속도도 같은 "캐릭터 설정" 그룹의 `#moveSpeed`(m/s)로 조절(`moveSpeedMps()`).
+- 평타 쿨다운 = `attackInterval() = 1 / attackSpeed()`. 공격 속도는 **사이드 패널 "캐릭터 설정"의 `#attackSpeed` 입력(회/초, 기본 1.5)** 을 근거리 최종 공속으로 읽고, 원거리폼에서는 `ATTACK_SPEED_FORMULA`의 기본공속 근거리 0.11·원거리 0.15와 무기공속·무숙공속·아이템공속 상수로 인게임 공식 `(기본공속+무기공속)*((1+무숙공속)+아이템공속)`을 역산·재계산한 뒤 `attackSpeedMultiplier()`를 곱한다. 각성 같은 아이템 공속 효과가 켜지거나 꺼질 때 `syncBasicAttackCooldown()`이 남은 평타 쿨다운 비율을 보존해 실시간 재계산한다. `ATTACK_RATE`는 폴백 기본값. 평타 입력 수락 시 `state.nextBasicAttackAt`을 잠그므로 우클릭·Shift+클릭·공격 이동·자동 공격의 연속 입력으로 공격속도를 초과할 수 없다. 쿨타임 초기화 모드는 독립 잠금과 `state.cooldowns.A` 표시를 제거하지 않는다.
+- 이동 속도도 같은 "캐릭터 설정" 그룹의 `#moveSpeed`(m/s)로 조절(`moveSpeedMps()`). 바로 아래 `#passiveLevel`은 과전하 종료 이동 속도 증가량을 1/2/3레벨 +10/13/16%로 고르며, 기본값은 3레벨이다.
 - `basicAttack`은 **시전 시작 시점**에 사거리(`ATTACK_MELEE`/`ATTACK_OVER`) 내 최근접 더미를 대상으로 고정하고, **대상이 없으면 시전하지 않는다**(사거리 밖 평타 금지).
 - 평타 **적중 시 근거리 Q 쿨타임(`Q_NORMAL`)을 1.5초 감소**(근접·원거리 평타 공통).
 

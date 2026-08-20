@@ -15,7 +15,7 @@
     <meta name="description" content="나 에이든은 마침내 독자적인 훈련 능력을 얻었다." />
     <link rel="icon" href="src/Aiden_P.png" />
     <title>든뮬레이터</title>
-    <link rel="stylesheet" href="styles.css?v=1.2.21" />
+    <link rel="stylesheet" href="styles.css?v=1.2.23" />
   </head>
   <body>
     <main class="simulator" aria-label="에이든 전투 연습장">
@@ -66,6 +66,14 @@
             <div class="setting-row">
               <label for="moveSpeed">이동 속도 (m/s)</label>
               <input type="number" id="moveSpeed" value="4.08" min="0.5" max="20" step="0.05" />
+            </div>
+            <div class="setting-row">
+              <label for="passiveLevel">패시브 레벨</label>
+              <select id="passiveLevel" aria-label="과전하 종료 이동 속도 증가 레벨">
+                <option value="1">1레벨 (+10%)</option>
+                <option value="2">2레벨 (+13%)</option>
+                <option value="3" selected>3레벨 (+16%)</option>
+              </select>
             </div>
           </div>
 
@@ -216,6 +224,6 @@
       </section>
     </main>
 
-    <script src="app.js?v=1.2.21"></script>
+    <script src="app.js?v=1.2.23"></script>
   </body>
 </html>

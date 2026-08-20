@@ -3,10 +3,18 @@ const DUMMY_HIT_RADIUS = 24;    // 더미 히트박스 반경(px) ≈ 더미 시
 const OVERCHARGE_TIME = 7;      // 과전하 지속시간(초)
 const CHARGE_DURATION = 5;      // 전하 지속시간(초). 전하 획득 시마다 초기화, 만료 시 전하 소멸
 const POST_HASTE_TIME = 2;
+const POST_HASTE_BONUS_BY_LEVEL = [0, 0.1, 0.13, 0.16];
 const POST_E2_HASTE_TIME = 2; // 백스텝(E1) 사용 후 이속 +20% 지속시간(초)
 const W_HOLD_FULL = 1.5; // W 완충 후 바가 가득 찬 상태로 유지되다 자동 방출되기까지의 시간(초)
 const WORLD_SCALE = 10;
-const ATTACK_RATE = { melee: 1.5, ranged: 1.35 };
+const ATTACK_RATE = { melee: 1.5 };
+const ATTACK_SPEED_FORMULA = {
+  meleeBase: 0.11,
+  rangedBase: 0.15,
+  weapon: 0,
+  mastery: 0,
+  item: 0
+};
 
 const RANGE = {
   Q_NORMAL: 168,
@@ -238,6 +246,7 @@ const els = {
   skillLog: document.getElementById("skillLog"),
   camSens: document.getElementById("camSens"),
   moveSpeed: document.getElementById("moveSpeed"),
+  passiveLevel: document.getElementById("passiveLevel"),
   attackSpeed: document.getElementById("attackSpeed"),
   keybinds: document.getElementById("keybinds"),
   skillSlots: [...document.querySelectorAll(".skill-slot")]
@@ -282,9 +291,40 @@ function moveSpeedMps() {
   return Number.isFinite(v) && v > 0 ? v : MOVE_SPEED_DEFAULT;
 }
 
-function attackSpeedBase() {
+function passiveLevel() {
+  const v = parseInt(els.passiveLevel?.value, 10);
+  return Number.isFinite(v) ? clamp(v, 1, 3) : 3;
+}
+
+function postOverchargeHasteBonus() {
+  return POST_HASTE_BONUS_BY_LEVEL[passiveLevel()] || POST_HASTE_BONUS_BY_LEVEL[3];
+}
+
+function attackForm() {
+  return isOvercharged() ? "ranged" : "melee";
+}
+
+function attackSpeedFormulaBase(form) {
+  const base = form === "ranged" ? ATTACK_SPEED_FORMULA.rangedBase : ATTACK_SPEED_FORMULA.meleeBase;
+  return base + ATTACK_SPEED_FORMULA.weapon;
+}
+
+function attackSpeedFormulaMultiplier() {
+  return (1 + ATTACK_SPEED_FORMULA.mastery) + ATTACK_SPEED_FORMULA.item;
+}
+
+function rangedAttackSpeedFromMelee(meleeFinal) {
+  const multiplier = attackSpeedFormulaMultiplier();
+  const meleeFormula = attackSpeedFormulaBase("melee") * multiplier;
+  if (meleeFormula <= 0) return meleeFinal;
+  const buildScale = meleeFinal / meleeFormula;
+  return attackSpeedFormulaBase("ranged") * multiplier * buildScale;
+}
+
+function attackSpeedBase(form = attackForm()) {
   const v = parseFloat(els.attackSpeed.value);
-  return Number.isFinite(v) && v > 0 ? v : ATTACK_RATE.melee;
+  const meleeFinal = Number.isFinite(v) && v > 0 ? v : ATTACK_RATE.melee;
+  return form === "ranged" ? rangedAttackSpeedFromMelee(meleeFinal) : meleeFinal;
 }
 
 function attackSpeedMultiplier() {
@@ -292,12 +332,12 @@ function attackSpeedMultiplier() {
 }
 
 // 공격 속도(회/초): 유저 설정값에 아이템 효과 배율을 실시간 반영한다.
-function attackSpeed() {
-  return attackSpeedBase() * attackSpeedMultiplier();
+function attackSpeed(form = attackForm()) {
+  return attackSpeedBase(form) * attackSpeedMultiplier();
 }
 
-function attackInterval() {
-  return 1 / clamp(attackSpeed(), 0.1, 20);
+function attackInterval(form = attackForm()) {
+  return 1 / clamp(attackSpeed(form), 0.1, 20);
 }
 
 function syncBasicAttackCooldown() {
@@ -348,7 +388,7 @@ function glamourMoveBonus() {
 // 현재 실효 이동 속도(m/s) — 기본값에 W 차징 슬로우·패시브 가속·백스텝 가속을 곱한 값.
 function effectiveMoveSpeedMps() {
   const slowed = state.recast.W > 0 && state.wStart > 0 ? 0.85 : 1;
-  const hasted = state.hasteTime > 0 ? 1.13 : 1;
+  const hasted = state.hasteTime > 0 ? 1 + postOverchargeHasteBonus() : 1;
   const e2Haste = state.e2HasteTime > 0 ? 1.2 : 1;
   const awakening = state.extraEffects.awakening.active > 0 && extraEffectEnabled("awakening") ? 1.12 : 1;
   const thunderHaste = state.extraEffects.thunder.haste > 0 && extraEffectEnabled("thunder") ? 1.2 : 1;
@@ -876,7 +916,7 @@ function leaveOvercharge() {
   state.hasteTime = POST_HASTE_TIME;
   stopOverchargeLoop();
   playSkillSound("src/sound/P_종료.mp3", 0.8, "P");
-  floating("이동 속도 증가", state.aiden, "blue");
+  floating(`이동 속도 +${Math.round(postOverchargeHasteBonus() * 100)}%`, state.aiden, "blue");
   spawnCircle(state.aiden, 150, "fx-circle");
 }
 
@@ -1312,7 +1352,7 @@ function basicAttack() {
   }
   const dir = direction(state.aiden, target);
   state.facing = dir.angle;
-  const interval = attackInterval();
+  const interval = attackInterval(overcharged ? "ranged" : "melee");
   state.nextBasicAttackAt = nowSeconds() + interval;
   state.basicAttackInterval = interval;
   state.cooldowns.A = interval;
@@ -2016,7 +2056,7 @@ function renderPanel() {
     ? `${Math.ceil(state.overTime)}`
     : (state.charge > 0 ? `${Math.ceil(state.chargeDecay)}` : "");
 
-  els.speedReadout.textContent = `이속 ${effectiveMoveSpeedMps().toFixed(2)} m/s · 공속 ${attackSpeed().toFixed(2)}/s`;
+  els.speedReadout.textContent = `이속 ${effectiveMoveSpeedMps().toFixed(2)} m/s · 공속(${over ? "원거리" : "근거리"}) ${attackSpeed().toFixed(2)}/s`;
 }
 
 function renderWCast() {
@@ -2593,6 +2633,7 @@ els.dummyMoveMode.addEventListener("change", () => {
   if (els.dummyMoveMode.checked) state.dummies.forEach(setDummyMoveAnchor);
   render();
 });
+els.passiveLevel.addEventListener("change", render);
 [els.effectWillpower, els.effectGlamour, els.effectThunder, els.effectAwakening].forEach((input) => {
   input.addEventListener("change", () => {
     if (!els.effectWillpower.checked) resetExtraEffect("willpower");
