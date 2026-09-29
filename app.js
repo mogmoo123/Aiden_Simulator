@@ -51,6 +51,7 @@ const E_PROJECTILE_SPEED = 15.5 * M; // E 투사체 속도 15.5m/s (px/s)
 const MOVE_SPEED_DEFAULT = 4.08;     // 기본 이동 속도 4.08m/s (UI에서 조절)
 const DUMMY_MOVE_RANGE = 3 * M;      // 더미 이동: 중심 기준 좌우 3m
 const R2_FULL_CHARGE_DELAY = 0.1;    // R2 적중 전하 +1 이후 풀충전까지의 짧은 틈
+const POINTER_REPEAT_INTERVAL = 0.05;
 
 const CAST = {
   Q_NORMAL: 0.216,
@@ -155,6 +156,7 @@ const state = {
   cam: { x: 38, y: 56 },
   spaceHeld: false,
   pointer: { x: 0, y: 0 },
+  heldPointer: null,
   placingDummy: false,
   buffer: null,
   shiftHeld: false,
@@ -1429,7 +1431,7 @@ function releaseW() {
   const releasePos = { ...state.aiden };
   const held = clamp(nowSeconds() - state.wStart, 0.15, skillDefs.W.chargeTime);
   const ratio = held / skillDefs.W.chargeTime;
-  const fullCharged = ratio >= 0.86;
+  const fullCharged = ratio >= 1;
   spawnCircle(releasePos, RANGE.W * 2, "fx-wcircle");
   spawnAfterimage(releasePos);
 
@@ -2129,6 +2131,7 @@ async function toggleFullscreen() {
 }
 
 function assignKeybind(action, code) {
+  state.spaceHeld = false;
   const previousCode = state.keybinds[action];
   const conflict = Object.keys(state.keybinds).find((key) => key !== action && state.keybinds[key] === code);
   if (conflict) state.keybinds[conflict] = previousCode;
@@ -2136,6 +2139,7 @@ function assignKeybind(action, code) {
 }
 
 function openKeybindModal() {
+  clearHeldInput();
   state.rebinding = null;
   state.pendingSkill = null;
   renderKeybinds();
@@ -2149,6 +2153,7 @@ function closeKeybindModal() {
 }
 
 function openOptionsModal() {
+  clearHeldInput();
   if (!els.optionsModal.open) els.optionsModal.showModal();
 }
 
@@ -2157,6 +2162,7 @@ function closeOptionsModal() {
 }
 
 function openExtraEffectModal() {
+  clearHeldInput();
   if (!els.extraEffectModal.open) els.extraEffectModal.showModal();
 }
 
@@ -2257,6 +2263,7 @@ function tick(time) {
   state.lastTick = time;
   updateCast(delta);
   updateTimers(delta);
+  updateHeldPointer();
   flushBuffer(delta);
   updateAttackMove();
   updateWalkingSound(updateMovement(delta), delta);
@@ -2293,6 +2300,7 @@ function addDummy(point = null) {
 }
 
 function resetChampion() {
+  clearHeldInput();
   stopSkillSound("W");
   stopSkillSound("R");
   stopSkillSound("P");
@@ -2325,6 +2333,7 @@ function resetChampion() {
 }
 
 function reset() {
+  clearHeldInput();
   stopSkillSound("W");
   stopSkillSound("R");
   stopSkillSound("P");
@@ -2373,43 +2382,43 @@ els.field.addEventListener("pointermove", (event) => {
   state.shiftHeld = event.shiftKey;
   const rect = fieldRect();
   state.pointer = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  if (state.heldPointer) {
+    const mask = state.heldPointer.button === 2 ? 2 : 1;
+    if (!(event.buttons & mask)) state.heldPointer = null;
+  }
 });
 
-els.field.addEventListener("pointerdown", (event) => {
-  state.cursor = pointFromEvent(event);
+// 단발 클릭과 홀드 반복은 같은 명령 경로와 평타 쿨다운을 사용한다.
+function runPointerCommand(button) {
   if (state.placingDummy) {
-    event.preventDefault();
     addDummy({ ...state.cursor });
     state.placingDummy = false;
     els.field.classList.remove("placing");
     render();
-    return;
+    return false;
   }
-  if (event.shiftKey) {
-    event.preventDefault();
+  if (state.shiftHeld) {
     state.skillAutoAttackActive = false;
     basicAttack();
-    return;
+    return true;
   }
   // A 사거리 표시가 활성화된 동안 사거리 원 내부 좌클릭: 사거리 내 최근접 적에게 즉시 평타
-  if (event.button === 0 && state.showAttackRange) {
-    event.preventDefault();
+  if (button === 0 && state.showAttackRange) {
     const attackRange = isOvercharged() ? RANGE.ATTACK_OVER : RANGE.ATTACK_MELEE;
     if (distance(state.aiden, state.cursor) <= attackRange) {
       state.skillAutoAttackActive = false;
       state.attackMove = null;
       basicAttack();
     }
-    return;
+    return true;
   }
-  if (event.button !== 2) return;
-  event.preventDefault();
+  if (button !== 2) return false;
   // 인디케이터 캐스트: 조준 중인 스킬을 우클릭으로 시전(취소는 Esc)
   if (state.pendingSkill) {
     const key = state.pendingSkill;
     state.pendingSkill = null;
     requestSkill(key);
-    return;
+    return false;
   }
   // 시전 중 이동/공격 명령으로 시전이 끊기지 않도록 cancelCasts는 호출하지 않는다(시전은 끝까지 진행).
   const range = isOvercharged() ? RANGE.ATTACK_OVER : RANGE.ATTACK_MELEE;
@@ -2429,6 +2438,57 @@ els.field.addEventListener("pointerdown", (event) => {
   } else {
     requestMove(state.cursor); // 빈 곳 클릭 → 이동(추격 취소)
   }
+  return true;
+}
+
+function clearHeldInput() {
+  state.heldPointer = null;
+  state.spaceHeld = false;
+  state.shiftHeld = false;
+  if (state.aSmartCasting) state.showAttackRange = false;
+  state.aSmartCasting = false;
+  state.pendingSkill = null;
+}
+
+function updateHeldPointer() {
+  const held = state.heldPointer;
+  if (!held || nowSeconds() < held.nextAt) return;
+  if (els.keybindModal.open || els.optionsModal.open || els.extraEffectModal.open) {
+    state.heldPointer = null;
+    return;
+  }
+  // 카메라 이동 중에도 화면의 현재 포인터 위치를 월드 좌표로 다시 투영한다.
+  const rect = fieldRect();
+  const eventPoint = { clientX: rect.left + state.pointer.x, clientY: rect.top + state.pointer.y };
+  if (!els.field.contains(document.elementFromPoint(eventPoint.clientX, eventPoint.clientY))) {
+    state.heldPointer = null;
+    return;
+  }
+  if (state.pendingSkill || state.buffer?.type === "skill") return;
+  state.cursor = pointFromEvent(eventPoint);
+  held.nextAt = nowSeconds() + POINTER_REPEAT_INTERVAL;
+  if (!runPointerCommand(held.button)) state.heldPointer = null;
+}
+
+els.field.addEventListener("pointerdown", (event) => {
+  if (event.button !== 0 && event.button !== 2) return;
+  event.preventDefault();
+  state.cursor = pointFromEvent(event);
+  state.shiftHeld = event.shiftKey;
+  const rect = fieldRect();
+  state.pointer = { x: event.clientX - rect.left, y: event.clientY - rect.top };
+  state.heldPointer = null;
+  if (runPointerCommand(event.button)) {
+    state.heldPointer = { button: event.button, nextAt: nowSeconds() + POINTER_REPEAT_INTERVAL };
+  }
+});
+
+window.addEventListener("pointerup", () => { state.heldPointer = null; });
+window.addEventListener("pointercancel", () => { state.heldPointer = null; });
+els.field.addEventListener("pointerleave", () => { state.heldPointer = null; });
+window.addEventListener("blur", clearHeldInput);
+document.addEventListener("visibilitychange", () => {
+  if (document.hidden) clearHeldInput();
 });
 
 els.field.addEventListener("contextmenu", (event) => {
@@ -2457,12 +2517,12 @@ window.addEventListener("keydown", (event) => {
     if (event.code !== "Escape") event.preventDefault();
     return;
   }
-  if (event.code === "Space") {
+  const action = Object.keys(state.keybinds).find((a) => state.keybinds[a] === event.code);
+  if (event.code === "Space" && !action) {
     event.preventDefault();
     state.spaceHeld = true;
     return;
   }
-  const action = Object.keys(state.keybinds).find((a) => state.keybinds[a] === event.code);
   if (action === "FULLSCREEN") {
     event.preventDefault();
     if (!event.repeat) toggleFullscreen();
@@ -2492,6 +2552,7 @@ window.addEventListener("keydown", (event) => {
     return;
   }
   if (action === "S") {
+    state.heldPointer = null;
     // S: 진행 중이던 이동 정지(클릭 이동·추격 평타·버퍼된 이동 명령 취소). 돌진 등 스킬 이동은 유지.
     state.moveTarget = null;
     state.attackMove = null;
@@ -2532,8 +2593,11 @@ window.addEventListener("keydown", (event) => {
 
 window.addEventListener("keyup", (event) => {
   state.shiftHeld = event.shiftKey;
-  if (event.code === "Space") { state.spaceHeld = false; return; }
   const upAction = Object.keys(state.keybinds).find((a) => state.keybinds[a] === event.code);
+  if (event.code === "Space") {
+    state.spaceHeld = false;
+    if (!upAction) return;
+  }
   if (upAction === "A" && els.aSmartCastMode.checked && state.aSmartCasting) {
     state.showAttackRange = false;
     state.aSmartCasting = false;
